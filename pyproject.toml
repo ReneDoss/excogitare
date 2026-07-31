@@ -1,0 +1,9 @@
+[project]
+name = "mindmapper"
+version = "1.4.1"
+description = "Engineering graph and mind-map editor"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.7,<7"]
+
+[project.scripts]
+mindmapper = "mindmapper.__main__:main"

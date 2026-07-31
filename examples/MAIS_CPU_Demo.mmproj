@@ -1,0 +1,137 @@
+{
+  "format": {
+    "name": "MindMapper Project",
+    "version": "0.2.0"
+  },
+  "generator": {
+    "name": "MindMapper",
+    "version": "0.2.0"
+  },
+  "project": {
+    "id": "project-demo",
+    "title": "MAIS CPU Beispiel",
+    "created": "2026-07-29T09:00:00+02:00",
+    "modified": "2026-07-29T09:00:00+02:00",
+    "active_map_id": "map-main"
+  },
+  "objects": {
+    "cpu": {
+      "id": "cpu",
+      "type": "node",
+      "title": "MAIS CPU",
+      "note": "",
+      "progress": 70,
+      "markers": [
+        "blue"
+      ],
+      "tags": [
+        "MIPS"
+      ]
+    },
+    "pipeline": {
+      "id": "pipeline",
+      "type": "node",
+      "title": "Pipeline",
+      "note": "",
+      "progress": 80,
+      "markers": [
+        "green"
+      ],
+      "tags": []
+    },
+    "uart": {
+      "id": "uart",
+      "type": "node",
+      "title": "HW-UART / GDB",
+      "note": "",
+      "progress": 100,
+      "markers": [
+        "green"
+      ],
+      "tags": [
+        "debug"
+      ]
+    },
+    "gcc": {
+      "id": "gcc",
+      "type": "node",
+      "title": "GCC + Linkerskript",
+      "note": "",
+      "progress": 100,
+      "markers": [
+        "green"
+      ],
+      "tags": []
+    }
+  },
+  "relations": {
+    "r1": {
+      "id": "r1",
+      "source_id": "cpu",
+      "target_id": "pipeline",
+      "type": "tree",
+      "label": ""
+    },
+    "r2": {
+      "id": "r2",
+      "source_id": "cpu",
+      "target_id": "uart",
+      "type": "tree",
+      "label": ""
+    },
+    "r3": {
+      "id": "r3",
+      "source_id": "cpu",
+      "target_id": "gcc",
+      "type": "tree",
+      "label": ""
+    }
+  },
+  "maps": {
+    "map-main": {
+      "id": "map-main",
+      "name": "Hauptmap",
+      "root_object_id": "cpu",
+      "object_states": {
+        "cpu": {
+          "x": 0,
+          "y": 0,
+          "width": 180,
+          "height": 54,
+          "collapsed": false,
+          "visible": true
+        },
+        "pipeline": {
+          "x": 300,
+          "y": -100,
+          "width": 180,
+          "height": 54,
+          "collapsed": false,
+          "visible": true
+        },
+        "uart": {
+          "x": 300,
+          "y": 0,
+          "width": 180,
+          "height": 54,
+          "collapsed": false,
+          "visible": true
+        },
+        "gcc": {
+          "x": 300,
+          "y": 100,
+          "width": 180,
+          "height": 54,
+          "collapsed": false,
+          "visible": true
+        }
+      },
+      "view": {
+        "zoom": 1.0,
+        "center_x": 0.0,
+        "center_y": 0.0
+      }
+    }
+  },
+  "attachments": {}
+}
