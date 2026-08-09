@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build
+build/
+dist/
+*.egg-info/
+*.zip
+
+# VS Code
+.vscode/
+
+
+# PyInstaller
+*.exe
+
+# Windows
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Temporary files
+*.tmp
+*.bak
+*~
+Exogitare.docx
