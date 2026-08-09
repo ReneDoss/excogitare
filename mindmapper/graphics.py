@@ -170,7 +170,15 @@ class EditableNodeText(QGraphicsTextItem):
 
     def begin_edit(self) -> None:
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
-        self.setFocus(Qt.MouseFocusReason)
+        self.setFocus(Qt.OtherFocusReason)
+
+        self.owner.scene_owner.editing_item = self
+        self._undo_snapshot = self.owner.scene_owner.make_snapshot()
+        self._original_html = self.toHtml()
+        self._original_title = self.toPlainText().strip()
+
+        QTimer.singleShot(0, self._select_all_text)
+
         cursor = self.textCursor()
         cursor.select(QTextCursor.Document)
         self.setTextCursor(cursor)
@@ -179,6 +187,15 @@ class EditableNodeText(QGraphicsTextItem):
         self._original_html = self.toHtml()
         self._original_title = self.toPlainText().strip()
 
+    def _select_all_text(self) -> None:
+        if not _qt_valid(self):
+            return
+
+        self.setFocus(Qt.OtherFocusReason)
+        cursor = self.textCursor()
+        cursor.select(QTextCursor.Document)
+        self.setTextCursor(cursor)
+        
     def finish_edit(self) -> None:
         plain = self.toPlainText().strip() or "Unbenannter Knoten"
         if not self.toPlainText().strip():
@@ -1676,8 +1693,13 @@ class MapScene(QGraphicsScene):
             return
         self.clearSelection()
         item.setSelected(True)
-        item.setFocus(Qt.OtherFocusReason)
+#        item.setFocus(Qt.OtherFocusReason)
         self.active_node_id = object_id
+
+        views = self.views()
+        if views:
+            views[0].setFocus(Qt.OtherFocusReason)
+
         item.label.begin_edit()
 
     def create_child_for_selected(self) -> str | None:
@@ -1862,12 +1884,7 @@ class MapScene(QGraphicsScene):
         self.push_undo()
         object_id = self.model.add_object(title, pos.x(), pos.y())
         self.rebuild()
-        item = self.node_items.get(object_id)
-        if item is not None:
-            self.clearSelection()
-            item.setSelected(True)
-            self.active_node_id = object_id
-            item.label.begin_edit()
+        self._select_and_edit_node(object_id)
         return object_id
 
     NODE_CLIPBOARD_MIME = "application/x-mindmapper-nodes+json"
