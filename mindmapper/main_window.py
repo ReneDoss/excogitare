@@ -217,6 +217,7 @@ class MainWindow(QMainWindow):
 
     def _create_sidebars(self) -> None:
         self.properties_dock = QDockWidget("Eigenschaften", self)
+        self.properties_dock.setObjectName("properties_dock")
         self.properties_dock.setAllowedAreas(
             Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea
         )
@@ -292,6 +293,8 @@ class MainWindow(QMainWindow):
         self._create_details_dock()
 
         self.overview_dock = QDockWidget("Übersicht", self)
+        self.overview_dock.setObjectName("overview_dock")
+        self.symbols_dock.setObjectName("symbolsDock")
         self.overview = MiniMapView(self.scene, self.view)
         self.overview_dock.setWidget(self.overview)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.overview_dock)
@@ -666,7 +669,7 @@ class MainWindow(QMainWindow):
             "QToolButton#symbolHeader { text-align: left; font-weight: 600; "
             "border: 0; padding: 4px 3px; margin: 0; background: transparent; }"
             "QToolButton#symbolHeader:hover { background: #edf1f6; border-radius: 4px; }"
-            "QToolButton#symbolButton { font-size: 15px; border: 1px solid transparent; "
+            "QToolButton#symbolButton { font-size: 11pt; border: 1px solid transparent; "
             "border-radius: 4px; background: transparent; padding: 0; }"
             "QToolButton#symbolButton:hover { background: #e8edf5; border-color: #c8d2df; }"
             "QToolButton#symbolButton:checked { background: #dce9ff; border-color: #6f9fdf; }"
