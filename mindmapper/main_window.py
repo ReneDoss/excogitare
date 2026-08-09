@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self.current_path: Path | None = None
         self.scene = MapScene(self.model)
         self.view = MapView(self.scene)
+        self._closing = False
         self._create_map_tabs()
         self._create_sidebars()
         self.scene.details_request_handler = self._show_node_details
@@ -804,7 +805,9 @@ class MainWindow(QMainWindow):
         node = self.scene.selected_node()
         return node.object_id if node is not None else None
 
-    def _update_properties(self) -> None:
+    def _update_properties(self):
+        if self._closing:
+            return
         object_id = self._selected_object_id()
         enabled = object_id is not None
         for widget in (
@@ -1410,6 +1413,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} – {self.current_path.name}")
 
     def closeEvent(self, event) -> None:
+        self._closing = True
+
         self.settings.setValue("main_window/geometry", self.saveGeometry())
         self.settings.setValue("main_window/state_v1_3", self.saveState())
         self.settings.sync()
