@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file>assets/excogitare.png</file>
+    </qresource>
+</RCC>

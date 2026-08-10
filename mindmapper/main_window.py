@@ -1059,6 +1059,28 @@ class MainWindow(QMainWindow):
         node_menu.addAction(self.create_child_action)
         node_menu.addAction(self.create_sibling_action)
 
+        help_menu = self.menuBar().addMenu(self.tr("&Hilfe"))
+        about_action = QAction(self.tr("Über Excogitare"), self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            self.tr("Über Excogitare"),
+            self.tr(
+                "<h2>Excogitare</h2>"
+                "<p><b>Engineering Knowledge Workspace</b></p>"
+                "<p>Version {version}</p>"
+                "<p><i>Collect your knowledge.<br>"
+                "Connect your ideas.<br>"
+                "Master complexity.</i></p>"
+                "<p>Developed by René Doß<br>"
+                "Dossmatik</p>"
+            ).format(version=APP_VERSION),
+        )
+
+
     def _create_toolbar(self) -> None:
         self.format_toolbar = QToolBar("Text", self)
         self.format_toolbar.setObjectName("text_toolbar")
@@ -1130,21 +1152,42 @@ class MainWindow(QMainWindow):
         self.format_toolbar.addAction(self.bullet_action)
         self.format_toolbar.addAction(self.numbered_action)
         self.format_toolbar.addSeparator()
+
+        self.font_size_down = QPushButton("−")
+        self.font_size_down.setFixedSize(24, 24)
+        self.font_size_down.setToolTip("Schrift verkleinern")
         self.font_size_spin = QSpinBox()
         self.font_size_spin.setRange(6, 72)
         self.font_size_spin.setValue(10)
         self.font_size_spin.setKeyboardTracking(False)
-        self.font_size_spin.setButtonSymbols(QAbstractSpinBox.UpDownArrows)
-        self.font_size_spin.setAccelerated(True)
-        self.font_size_spin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.font_size_spin.setToolTip("Schriftgröße – obere und untere Pfeiltaste ändern den Wert")
-        self.font_size_spin.setFixedWidth(52)
+        self.font_size_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)     
+        self.font_size_spin.setAlignment(Qt.AlignCenter)
+        self.font_size_spin.setToolTip("Schriftgröße")
+        self.font_size_spin.setFixedWidth(54)
+        self.font_size_spin.setMinimumWidth(54)
         self.font_size_spin.valueChanged.connect(self._set_font_size)
+        self.font_size_up = QPushButton("+")
+        self.font_size_up.setFixedSize(24, 24)
+        self.font_size_up.setToolTip("Schrift vergrößern")
+
+        self.font_size_down.clicked.connect(
+            lambda: self.font_size_spin.setValue(self.font_size_spin.value() - 1)
+        )
+        self.font_size_up.clicked.connect(
+            lambda: self.font_size_spin.setValue(self.font_size_spin.value() + 1)
+        )
+
+        self.format_toolbar.addWidget(self.font_size_down)
         self.format_toolbar.addWidget(self.font_size_spin)
+        self.format_toolbar.addWidget(self.font_size_up)
+
+        
         self.format_toolbar.addAction(self.text_color_action)
         self.format_toolbar.addAction(self.link_action)
         self.format_toolbar.addSeparator()
         self.format_toolbar.addAction(self.paste_rich_action)
+
+
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)

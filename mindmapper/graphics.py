@@ -337,8 +337,15 @@ class EditableNodeText(QGraphicsTextItem):
             self.paste_from_clipboard(); event.accept(); return
         if event.key() == Qt.Key_L and event.modifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
             self.toggle_bullet_list(); event.accept(); return
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and event.modifiers() & Qt.ControlModifier:
-            self.finish_edit(); event.accept(); return
+
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            modifiers = event.modifiers()
+
+            if modifiers == Qt.ControlModifier or modifiers == Qt.ShiftModifier:
+                self.finish_edit()
+                event.accept()
+                return
+          
         if event.key() == Qt.Key_Escape:
             self.setHtml(getattr(self, "_original_html", self.toHtml()))
             self.setTextInteractionFlags(Qt.NoTextInteraction)
