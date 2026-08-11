@@ -31,3 +31,6 @@ desktop.ini
 *.bak
 *~
 Excogitare.docx
+
+# Excogitare backup files
+*.mmproj.backup-*

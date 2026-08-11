@@ -17,7 +17,7 @@ def load_project(path: str | Path) -> dict[str, Any]:
     return migrate_document(raw)
 
 
-def save_project(path: str | Path, data: dict[str, Any], create_backup: bool = True) -> None:
+def save_project(path: str | Path, data: dict[str, Any], create_backup: bool = False) -> None:
     project_path = Path(path)
     project_path.parent.mkdir(parents=True, exist_ok=True)
 
