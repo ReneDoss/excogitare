@@ -1,0 +1,71 @@
+{
+  "format": {
+    "name": "MindMapper Project",
+    "version": "1.0"
+  },
+  "generator": {
+    "name": "Excogitare",
+    "version": "0.1.1Beta"
+  },
+  "project": {
+    "id": "project-2b8c8e27-1d6b-48a4-9b40-372df4c37270",
+    "title": "Unbenannt",
+    "created": "2026-08-11T19:58:34+02:00",
+    "modified": "2026-08-11T19:58:46+02:00",
+    "active_map_id": "map-412efec4-b05f-4b53-bb72-100bcdafe0c5"
+  },
+  "objects": {
+    "object-dbc1e8c3-0c30-40d8-b6b1-26900a7201dc": {
+      "id": "object-dbc1e8c3-0c30-40d8-b6b1-26900a7201dc",
+      "type": "node",
+      "content_role": "topic",
+      "node_type": "topic",
+      "symbol": "",
+      "symbols": [],
+      "status": "",
+      "title": "a",
+      "rich_html": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta charset=\"utf-8\" /><style type=\"text/css\">\np, li { white-space: pre-wrap; }\nhr { height: 1px; border-width: 0; }\nli.unchecked::marker { content: \"\\2610\"; }\nli.checked::marker { content: \"\\2612\"; }\n</style></head><body style=\" font-family:'Segoe UI'; font-size:9pt; font-weight:400; font-style:normal;\">\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">a</p>\n<p style=\"-qt-paragraph-type:empty; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><br /></p></body></html>",
+      "note": "",
+      "progress": 0,
+      "markers": [],
+      "tags": [],
+      "attachments": [],
+      "created": "2026-08-11T19:58:34+02:00",
+      "modified": "2026-08-11T19:58:46+02:00"
+    }
+  },
+  "relations": {},
+  "maps": {
+    "map-412efec4-b05f-4b53-bb72-100bcdafe0c5": {
+      "id": "map-412efec4-b05f-4b53-bb72-100bcdafe0c5",
+      "name": "Neue Map",
+      "root_object_id": "object-dbc1e8c3-0c30-40d8-b6b1-26900a7201dc",
+      "object_states": {
+        "object-dbc1e8c3-0c30-40d8-b6b1-26900a7201dc": {
+          "x": -1.0,
+          "y": -1.0,
+          "width": 180.0,
+          "height": 60.0,
+          "collapsed": false,
+          "visible": true,
+          "layout_direction": "right",
+          "default_branch_type": 1,
+          "shape": "rounded",
+          "fill_color": "#f7f7f7",
+          "border_color": "#4f5d75",
+          "text_color": "#202020",
+          "border_width": 1.5,
+          "corner_radius": 12.0,
+          "layout_mode": "auto",
+          "size_mode": "auto"
+        }
+      },
+      "view": {
+        "zoom": 1.0,
+        "center_x": 0.0,
+        "center_y": 0.0
+      }
+    }
+  },
+  "attachments": {}
+}

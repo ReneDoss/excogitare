@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import QFileInfo, QSettings, QSize, QTimer, Qt, QUrl
 import shiboken6
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QDesktopServices, QIcon, QPainter, QPen, QPixmap
@@ -44,6 +46,10 @@ from .model import ProjectModel
 from .storage import load_project, save_project
 from .view import MapView, MiniMapView
 
+@dataclass
+class DocumentState:
+    model: ProjectModel
+    path: Path | None = None
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -51,7 +57,19 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("Dossmatik", "MindMapper")
         self.model = ProjectModel.create()
         self.current_path: Path | None = None
+
+        self.documents: list[DocumentState] = [
+            DocumentState(
+            model=self.model,
+            path=self.current_path,
+            )
+        ]
+        self.active_document_index = 0
+
         self.scene = MapScene(self.model)
+ #       self.model = ProjectModel.create()
+ #       self.current_path: Path | None = None
+ #       self.scene = MapScene(self.model)
         self.view = MapView(self.scene)
         self._closing = False
         self._create_map_tabs()
@@ -93,7 +111,7 @@ class MainWindow(QMainWindow):
         self.map_tabs.setUsesScrollButtons(True)
         self.map_tabs.currentChanged.connect(self._on_map_tab_changed)
         self.map_tabs.tabCloseRequested.connect(self._close_map_tab)
-        self.map_tabs.tabBarDoubleClicked.connect(self._rename_map_tab)
+    #    self.map_tabs.tabBarDoubleClicked.connect(self._rename_map_tab)
         self.map_tabs.tabMoved.connect(self._keep_plus_tab_last)
         self.map_tabs.setStyleSheet(
             "QTabBar#map_tabs { background: #eef1f5; border-bottom: 1px solid #c8ced7; }"
@@ -112,40 +130,102 @@ class MainWindow(QMainWindow):
     def _refresh_map_tabs(self) -> None:
         if not hasattr(self, "map_tabs"):
             return
+
         self.map_tabs.blockSignals(True)
+
         while self.map_tabs.count():
             self.map_tabs.removeTab(0)
-        active_id = self.model.active_map_id
-        active_index = 0
-        for index, (map_id, map_data) in enumerate(self.model.data["maps"].items()):
-            self.map_tabs.addTab(str(map_data.get("name", "Neue Map")))
-            self.map_tabs.setTabData(index, map_id)
-            if map_id == active_id:
-                active_index = index
+
+        for index, document in enumerate(self.documents):
+            if document.path is None:
+                tab_name = "Unbenannt"
+            else:
+                tab_name = document.path.stem
+
+            self.map_tabs.addTab(tab_name)
+            self.map_tabs.setTabData(index, index)
+
         plus_index = self.map_tabs.addTab("+")
         self.map_tabs.setTabData(plus_index, None)
         self.map_tabs.setTabToolTip(plus_index, "Neue Map anlegen")
-        self.map_tabs.setTabButton(plus_index, QTabBar.ButtonPosition.RightSide, None)
-        self.map_tabs.setCurrentIndex(active_index)
+        self.map_tabs.setTabButton(
+            plus_index,
+            QTabBar.ButtonPosition.RightSide,
+            None,
+        )
+
+        self.map_tabs.setCurrentIndex(self.active_document_index)
         self.map_tabs.blockSignals(False)
 
     def _on_map_tab_changed(self, index: int) -> None:
         if index < 0:
             return
-        map_id = self.map_tabs.tabData(index)
-        if map_id is None:
-            self._add_new_map()
+
+        document_index = self.map_tabs.tabData(index)
+
+        if document_index is None:
+            self._add_new_document()
             return
-        if map_id not in self.model.data["maps"]:
+
+        document_index = int(document_index)
+
+        if document_index < 0 or document_index >= len(self.documents):
             return
-        self.model.data["project"]["active_map_id"] = map_id
+
+        self.active_document_index = document_index
+
+        document = self.documents[document_index]
+
+        self.model = document.model
+        self.current_path = document.path
+
+        self.scene.model = self.model
         self.scene.active_node_id = None
         self.scene.clear_history()
         self.scene.rebuild()
+
         self._update_properties()
         self._update_status()
+
+        if self.current_path is None:
+            self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+        else:
+            self.setWindowTitle(
+                f"{APP_NAME} {APP_VERSION} – {self.current_path.name}"
+            )
+
         if not self.model.active_map.get("object_states"):
             QTimer.singleShot(0, self._create_initial_root_node)
+
+    def _add_new_document(self) -> None:
+        new_model = ProjectModel.create()
+
+        document = DocumentState(
+            model=new_model,
+            path=None,
+        )
+
+        self.documents.append(document)
+        self.active_document_index = len(self.documents) - 1
+
+        self.model = new_model
+        self.current_path = None
+
+        self.scene.model = self.model
+        self.scene.clear_history()
+        self.scene.active_node_id = None
+        self.scene.rebuild()
+
+        self._refresh_map_tabs()
+        self._update_properties()
+        self._update_status()
+
+        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+
+        QTimer.singleShot(0, self._create_initial_root_node)
+
+
+
 
     def _add_new_map(self) -> None:
         map_id = self.model.add_map()
@@ -162,42 +242,77 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _close_map_tab(self, index: int) -> None:
-        map_id = self.map_tabs.tabData(index)
-        if map_id is None:
+        document_index = self.map_tabs.tabData(index)
+
+        # Das Plus-Tab kann nicht geschlossen werden.
+        if document_index is None:
             return
-        map_name = str(self.model.data["maps"].get(map_id, {}).get("name", "Map"))
+
+        document_index = int(document_index)
+
+        if document_index < 0 or document_index >= len(self.documents):
+            return
+
+        document = self.documents[document_index]
+
+        if document.path is None:
+            document_name = "Unbenannt"
+        else:
+            document_name = document.path.stem
+
         answer = QMessageBox.question(
             self,
             "Map schließen",
-            f'Soll die Map "{map_name}" wirklich geschlossen werden?\n\n'
-            "Nicht gespeicherte Änderungen dieser Map gehen verloren.",
+            f'Soll "{document_name}" wirklich geschlossen werden?',
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
+
         if answer != QMessageBox.Yes:
             return
-        self.model.remove_map(str(map_id))
-        if not self.model.data["maps"]:
-            self.model.add_map()
+
+        # Dokument nur aus Excogitare schließen.
+        # Die .mmproj-Datei auf der Festplatte bleibt erhalten.
+        self.documents.pop(document_index)
+
+        # Es soll immer mindestens ein Dokument geöffnet bleiben.
+        if not self.documents:
+            new_model = ProjectModel.create()
+            self.documents.append(
+                DocumentState(
+                    model=new_model,
+                    path=None,
+                )
+            )
+
+        self.active_document_index = min(
+            document_index,
+            len(self.documents) - 1,
+        )
+
+        document = self.documents[self.active_document_index]
+
+        self.model = document.model
+        self.current_path = document.path
+
+        self.scene.model = self.model
         self.scene.active_node_id = None
         self.scene.clear_history()
         self.scene.rebuild()
+
         self._refresh_map_tabs()
-        if not self.model.active_map.get("object_states"):
-            QTimer.singleShot(0, self._create_initial_root_node)
         self._update_properties()
         self._update_status()
 
-    def _rename_map_tab(self, index: int) -> None:
-        map_id = self.map_tabs.tabData(index)
-        if map_id is None:
-            return
-        old_name = str(self.model.data["maps"][map_id].get("name", "Neue Map"))
-        name, ok = QInputDialog.getText(self, "Map umbenennen", "Name:", text=old_name)
-        if ok and name.strip():
-            self.model.rename_map(str(map_id), name)
-            self.map_tabs.setTabText(index, name.strip())
-            self._update_status()
+        if self.current_path is None:
+            self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+        else:
+            self.setWindowTitle(
+                f"{APP_NAME} {APP_VERSION} – {self.current_path.name}"
+            )
+
+        if not self.model.active_map.get("object_states"):
+            QTimer.singleShot(0, self._create_initial_root_node)
 
     def _keep_plus_tab_last(self, _from: int, _to: int) -> None:
         plus_index = next((i for i in range(self.map_tabs.count())
@@ -1076,7 +1191,7 @@ class MainWindow(QMainWindow):
                 "Connect your ideas.<br>"
                 "Master complexity.</i></p>"
                 "<p>Developed by René Doß<br>"
-                "Dossmatik</p>"
+                "Dossmatik GmbH</p>"
             ).format(version=APP_VERSION),
         )
 
@@ -1416,16 +1531,42 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Fehler beim Öffnen", str(exc))
             return
 
-        self.model = ProjectModel(data)
-        self.current_path = Path(path)
+     #   self.model = ProjectModel(data)
+     #   self.current_path = Path(path)
+     #   self.scene.model = self.model
+    #  self.scene.clear_history()
+    #    self.scene.active_node_id = None
+    #    self.scene.rebuild()
+    #    self._refresh_map_tabs()
+    #    self._update_properties()
+    #    self._update_status()
+    #    self.setWindowTitle(f"{APP_NAME} {APP_VERSION} – {self.current_path.name}")
+        new_model = ProjectModel(data)
+        new_path = Path(path)
+
+        document = DocumentState(
+            model=new_model,
+            path=new_path,
+        )
+
+        self.documents.append(document)
+        self.active_document_index = len(self.documents) - 1
+
+        self.model = new_model
+        self.current_path = new_path
+
         self.scene.model = self.model
         self.scene.clear_history()
         self.scene.active_node_id = None
         self.scene.rebuild()
+
         self._refresh_map_tabs()
         self._update_properties()
         self._update_status()
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} – {self.current_path.name}")
+
+        self.setWindowTitle(
+            f"{APP_NAME} {APP_VERSION} – {self.current_path.name}"
+        )
 
     def save_project(self) -> None:
         if self.current_path is None:
@@ -1455,7 +1596,10 @@ class MainWindow(QMainWindow):
             path += ".mmproj"
 
         self.current_path = Path(path)
+        self.documents[self.active_document_index].path = self.current_path
+
         self.save_project()
+        self._refresh_map_tabs()
         self.setWindowTitle(f"{APP_NAME} {APP_VERSION} – {self.current_path.name}")
 
     def closeEvent(self, event) -> None:

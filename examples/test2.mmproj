@@ -1,0 +1,71 @@
+{
+  "format": {
+    "name": "MindMapper Project",
+    "version": "1.0"
+  },
+  "generator": {
+    "name": "Excogitare",
+    "version": "0.1.1Beta"
+  },
+  "project": {
+    "id": "project-d06c9a1d-cc5f-40f5-986a-824791dd82a2",
+    "title": "Unbenannt",
+    "created": "2026-08-11T19:59:02+02:00",
+    "modified": "2026-08-11T19:59:02+02:00",
+    "active_map_id": "map-c0929f01-7dfa-4a5b-97db-e83bb5b48104"
+  },
+  "objects": {
+    "object-1ea4d276-2b5e-42f1-89c1-0a130ff20b04": {
+      "id": "object-1ea4d276-2b5e-42f1-89c1-0a130ff20b04",
+      "type": "node",
+      "content_role": "topic",
+      "node_type": "topic",
+      "symbol": "",
+      "symbols": [],
+      "status": "",
+      "title": "Neuer Knoten",
+      "rich_html": "",
+      "note": "",
+      "progress": 0,
+      "markers": [],
+      "tags": [],
+      "attachments": [],
+      "created": "2026-08-11T19:59:02+02:00",
+      "modified": "2026-08-11T19:59:02+02:00"
+    }
+  },
+  "relations": {},
+  "maps": {
+    "map-c0929f01-7dfa-4a5b-97db-e83bb5b48104": {
+      "id": "map-c0929f01-7dfa-4a5b-97db-e83bb5b48104",
+      "name": "Neue Map",
+      "root_object_id": "object-1ea4d276-2b5e-42f1-89c1-0a130ff20b04",
+      "object_states": {
+        "object-1ea4d276-2b5e-42f1-89c1-0a130ff20b04": {
+          "x": -1.0,
+          "y": -1.0,
+          "width": 180.0,
+          "height": 54.0,
+          "collapsed": false,
+          "visible": true,
+          "layout_direction": "right",
+          "default_branch_type": 1,
+          "shape": "rounded",
+          "fill_color": "#f7f7f7",
+          "border_color": "#4f5d75",
+          "text_color": "#202020",
+          "border_width": 1.5,
+          "corner_radius": 12.0,
+          "layout_mode": "auto",
+          "size_mode": "auto"
+        }
+      },
+      "view": {
+        "zoom": 1.0,
+        "center_x": 0.0,
+        "center_y": 0.0
+      }
+    }
+  },
+  "attachments": {}
+}
