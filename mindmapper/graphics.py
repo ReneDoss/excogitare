@@ -138,6 +138,22 @@ class EditableNodeText(QGraphicsTextItem):
         self.document().documentLayout().documentSizeChanged.connect(
             self._document_size_changed
         )
+
+        # Eingebettete Bilder werden beim Überfahren mit der Maus markiert.
+        # Ein kleiner Griff unten rechts erlaubt proportionales Skalieren.
+        self.setAcceptHoverEvents(True)
+
+        self.image_hover_frame = QGraphicsRectItem(self)
+        self.image_hover_frame.setPen(
+            QPen(QColor("#2563eb"), 1.5, Qt.DashLine)
+        )
+        self.image_hover_frame.setBrush(Qt.NoBrush)
+        self.image_hover_frame.setAcceptedMouseButtons(Qt.NoButton)
+        self.image_hover_frame.setZValue(90)
+        self.image_hover_frame.setVisible(False)
+
+        self.image_resize_handle = ImageResizeHandle(self)
+
         owner.update_content_positions()
 
     def _document_changed(self) -> None:
@@ -167,6 +183,126 @@ class EditableNodeText(QGraphicsTextItem):
             owner.resize_to_document()
         except (RuntimeError, ReferenceError):
             return
+
+    def _first_image(self):
+        """Findet das erste eingebettete Bild im QTextDocument."""
+        document = self.document()
+        count = max(0, document.characterCount() - 1)
+
+        for position in range(count):
+            cursor = QTextCursor(document)
+            cursor.setPosition(position)
+            cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
+            fmt = cursor.charFormat()
+
+            if fmt.isImageFormat():
+                return cursor, fmt.toImageFormat()
+
+        return None
+
+    def _image_rect(self) -> QRectF | None:
+        """Liefert die tatsächliche Position des ersten Inline-Bildes.
+
+        Bilder liegen im QTextDocument wie ein einzelnes Textzeichen. Deshalb
+        darf ihre Position nicht einfach mit dem Dokumentrand gleichgesetzt
+        werden: Vor dem Bild kann Text stehen, wie z. B. "Petrol".
+        """
+        image = self._first_image()
+        if image is None:
+            return None
+
+        cursor, image_format = image
+        width = float(image_format.width())
+        height = float(image_format.height())
+
+        if width <= 0.0 or height <= 0.0:
+            return None
+
+        block = cursor.block()
+        layout = block.layout()
+        if layout is None:
+            return None
+
+        position_in_block = max(0, cursor.selectionStart() - block.position())
+        line = layout.lineForTextPosition(position_in_block)
+        if not line.isValid():
+            return None
+
+        # x-Position des Inline-Objekts innerhalb der Textzeile.
+        cursor_x = line.cursorToX(position_in_block)
+        # PySide6 liefert je nach Binding-Version entweder nur x oder
+        # ein Tupel (x, trailingPosition) zurück.
+        if isinstance(cursor_x, tuple):
+            cursor_x = cursor_x[0]
+        x = float(cursor_x)
+
+        # blockBoundingRect() enthält die tatsächliche Dokumentposition des
+        # Absatzes. line.y() berücksichtigt zusätzlich die Zeile im Absatz.
+        block_rect = self.document().documentLayout().blockBoundingRect(block)
+        y = float(block_rect.top() + line.y())
+
+        return QRectF(x, y, width, height)
+
+    def _set_image_size(self, width: float, height: float) -> None:
+        image = self._first_image()
+        if image is None:
+            return
+
+        cursor, image_format = image
+        image_format.setWidth(float(width))
+        image_format.setHeight(float(height))
+        cursor.setCharFormat(image_format)
+
+        self._update_image_hover()
+        self._schedule_geometry_update()
+
+    def _commit_image_resize(self) -> None:
+        """Übernimmt die neue Bildgröße dauerhaft ins Projektmodell."""
+        title = str(
+            self.owner.model.data["objects"][self.owner.object_id].get(
+                "title",
+                "Bild",
+            )
+        )
+        self.owner.model.set_rich_text(
+            self.owner.object_id,
+            self.toHtml(),
+            title,
+        )
+        self.owner.resize_to_document()
+
+    def _update_image_hover(self) -> None:
+        rect = self._image_rect()
+        if rect is None:
+            self.image_hover_frame.setVisible(False)
+            self.image_resize_handle.setVisible(False)
+            return
+
+        self.image_hover_frame.setRect(rect)
+        self.image_hover_frame.setVisible(True)
+        self.image_resize_handle.setPos(
+            rect.right() - ImageResizeHandle.SIZE / 2.0,
+            rect.bottom() - ImageResizeHandle.SIZE / 2.0,
+        )
+        self.image_resize_handle.setVisible(True)
+
+    def _hide_image_hover(self) -> None:
+        if getattr(self.image_resize_handle, "_dragging", False):
+            return
+        self.image_hover_frame.setVisible(False)
+        self.image_resize_handle.setVisible(False)
+
+    def hoverMoveEvent(self, event) -> None:
+        rect = self._image_rect()
+        if rect is not None and rect.contains(event.pos()):
+            self._update_image_hover()
+        elif not getattr(self.image_resize_handle, "_dragging", False):
+            self._hide_image_hover()
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event) -> None:
+        self._hide_image_hover()
+        super().hoverLeaveEvent(event)
 
     def begin_edit(self) -> None:
         self.setTextInteractionFlags(Qt.TextEditorInteraction)
@@ -627,6 +763,74 @@ class BranchExitHandle(QGraphicsRectItem):
             event.accept()
             return
         super().mousePressEvent(event)
+
+
+class ImageResizeHandle(QGraphicsRectItem):
+    """Ziehgriff unten rechts an einem eingebetteten Bild."""
+
+    SIZE = 10.0
+
+    def __init__(self, editor: "EditableNodeText") -> None:
+        half = self.SIZE / 2.0
+        super().__init__(-half, -half, self.SIZE, self.SIZE, editor)
+        self.editor = editor
+        self.setZValue(100)
+        self.setBrush(QColor("#ffffff"))
+        self.setPen(QPen(QColor("#2563eb"), 1.5))
+        self.setCursor(Qt.SizeFDiagCursor)
+        self.setAcceptedMouseButtons(Qt.LeftButton)
+        self.setVisible(False)
+
+        self._snapshot = None
+        self._dragging = False
+        self._start_width = 0.0
+        self._start_height = 0.0
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() != Qt.LeftButton:
+            super().mousePressEvent(event)
+            return
+
+        image = self.editor._first_image()
+        if image is None:
+            return
+
+        _cursor, image_format = image
+        self._start_width = max(1.0, float(image_format.width()))
+        self._start_height = max(1.0, float(image_format.height()))
+        self._snapshot = self.editor.owner.scene_owner.make_snapshot()
+        self._dragging = True
+        event.accept()
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if not self._dragging:
+            return
+
+        rect = self.editor._image_rect()
+        if rect is None:
+            return
+
+        local = self.editor.mapFromScene(event.scenePos())
+        new_width = max(30.0, local.x() - rect.left())
+        aspect = (
+            self._start_height / self._start_width
+            if self._start_width > 0.0
+            else 1.0
+        )
+        new_height = max(20.0, new_width * aspect)
+        self.editor._set_image_size(new_width, new_height)
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if not self._dragging:
+            return
+
+        self._dragging = False
+        self.editor._commit_image_resize()
+        self.editor.owner.scene_owner.commit_snapshot(self._snapshot)
+        self._snapshot = None
+        self.editor._update_image_hover()
+        event.accept()
 
 
 class NodeResizeHandle(QGraphicsRectItem):
