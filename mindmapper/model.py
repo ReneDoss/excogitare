@@ -49,6 +49,7 @@ class ProjectModel:
                     "name": "Neue Map",
                     "root_object_id": None,
                     "object_states": {},
+                    "drawings": {},
                     "view": {
                         "zoom": 1.0,
                         "center_x": 0.0,
@@ -83,6 +84,7 @@ class ProjectModel:
             "name": name,
             "root_object_id": None,
             "object_states": {},
+            "drawings": {},
             "view": {
                 "zoom": 1.0,
                 "center_x": 0.0,
@@ -217,6 +219,23 @@ class ProjectModel:
         }
         self.touch()
         return relation_id
+
+    def remove_relation(self, relation_id: str) -> bool:
+        """Löscht nur die Beziehung; die Knoten bleiben bestehen."""
+        if relation_id not in self.data["relations"]:
+            return False
+        del self.data["relations"][relation_id]
+        self.touch()
+        return True
+
+    def reset_relation_route(self, relation_id: str) -> bool:
+        relation = self.data["relations"].get(relation_id)
+        if relation is None:
+            return False
+        relation.pop("route_x", None)
+        relation.pop("route_y", None)
+        self.touch()
+        return True
 
     @staticmethod
     def branch_type_to_direction(branch_type: int) -> str:

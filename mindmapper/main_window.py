@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QFileInfo, QSettings, QSize, QTimer, Qt, QUrl
 import shiboken6
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QDesktopServices, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QDesktopServices, QIcon, QPainter, QPen, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
@@ -45,6 +45,34 @@ from .migrations import UnsupportedFormatError
 from .model import ProjectModel
 from .storage import load_project, save_project
 from .view import MapView, MiniMapView
+from .drawing import DrawingDock
+
+def _make_format_painter_icon(size: int = 18) -> QIcon:
+    """Kleiner neutraler Formatpinsel ohne Abhängigkeit von Emoji-Fonts."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+
+    pen = QPen(QColor("#4b5563"), 1.6)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+
+    # Pinselstiel
+    painter.drawLine(4, 14, 12, 6)
+    painter.drawLine(6, 16, 14, 8)
+
+    # Pinselkopf
+    painter.setBrush(QColor("#d9a441"))
+    painter.drawRect(11, 3, 5, 6)
+
+    # kleine Farbkante
+    painter.setPen(QPen(QColor("#2563eb"), 2.0))
+    painter.drawLine(3, 15, 6, 15)
+    painter.end()
+    return QIcon(pixmap)
+
 
 @dataclass
 class DocumentState:
@@ -67,6 +95,9 @@ class MainWindow(QMainWindow):
         self.active_document_index = 0
 
         self.scene = MapScene(self.model)
+        self._format_painter_payload = None
+        self.scene.format_painter_handler = self._apply_format_painter_to_item
+        self.scene.format_painter_cancel_handler = self._cancel_format_painter
  #       self.model = ProjectModel.create()
  #       self.current_path: Path | None = None
  #       self.scene = MapScene(self.model)
@@ -407,6 +438,9 @@ class MainWindow(QMainWindow):
         self._create_symbols_dock()
         self._create_details_dock()
 
+        self.drawing_dock = DrawingDock(self.scene.drawing_controller, self)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.drawing_dock)
+
         self.overview_dock = QDockWidget("Übersicht", self)
         self.overview_dock.setObjectName("overview_dock")
         self.symbols_dock.setObjectName("symbolsDock")
@@ -417,8 +451,8 @@ class MainWindow(QMainWindow):
         # erhält die Symbolbibliothek den frei werdenden Platz.
         self.overview_dock.hide()
         self.resizeDocks(
-            [self.properties_dock, self.symbols_dock],
-            [260, 500],
+            [self.symbols_dock, self.drawing_dock, self.properties_dock],
+            [420, 190, 260],
             Qt.Vertical,
         )
         self._update_properties()
@@ -1118,8 +1152,12 @@ class MainWindow(QMainWindow):
         self.numbered_action.setCheckable(True)
         self.numbered_action.triggered.connect(lambda: self._apply_text_format("numbered"))
 
-        self.text_color_action = QAction("Textfarbe …", self)
-        self.text_color_action.triggered.connect(self._choose_text_color)
+        self.text_color_action = QAction("Farbe …", self)
+        self.text_color_action.triggered.connect(self._choose_context_color)
+
+        self.format_painter_action = QAction("Format übertragen", self)
+        self.format_painter_action.setToolTip("Format des ausgewählten Elements übernehmen")
+        self.format_painter_action.triggered.connect(self._start_format_painter)
 
         self.link_action = QAction("Link einfügen …", self)
         self.link_action.setShortcut("Ctrl+K")
@@ -1153,6 +1191,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.symbols_dock.toggleViewAction())
         view_menu.addAction(self.overview_dock.toggleViewAction())
         view_menu.addAction(self.details_dock.toggleViewAction())
+        view_menu.addAction(self.drawing_dock.toggleViewAction())
         view_menu.addSeparator()
         self.reset_layout_action = QAction("Fenster zurücksetzen", self)
         self.reset_layout_action.triggered.connect(self._reset_window_layout)
@@ -1167,6 +1206,7 @@ class MainWindow(QMainWindow):
         format_menu.addAction(self.numbered_action)
         format_menu.addSeparator()
         format_menu.addAction(self.text_color_action)
+        format_menu.addAction(self.format_painter_action)
         format_menu.addAction(self.link_action)
 
         node_menu = self.menuBar().addMenu("&Knoten")
@@ -1253,8 +1293,8 @@ class MainWindow(QMainWindow):
         self.bullet_action.setToolTip("Aufzählung")
         self.numbered_action.setText("1.")
         self.numbered_action.setToolTip("Nummerierte Liste")
-        self.text_color_action.setText("A▾")
-        self.text_color_action.setToolTip("Textfarbe wählen")
+        self.text_color_action.setText("Farbe ▾")
+        self.text_color_action.setToolTip("Farbe des ausgewählten Elements ändern")
         self.link_action.setText("🔗")
         self.link_action.setToolTip("Link einfügen (Strg+K)")
         self.paste_rich_action.setText("📋")
@@ -1298,6 +1338,16 @@ class MainWindow(QMainWindow):
 
         
         self.format_toolbar.addAction(self.text_color_action)
+
+        self.format_painter_button = QToolButton()
+        self.format_painter_button.setIcon(_make_format_painter_icon())
+        self.format_painter_button.setIconSize(QSize(18, 18))
+        self.format_painter_button.setCheckable(True)
+        self.format_painter_button.setAutoRaise(True)
+        self.format_painter_button.setFixedSize(28, 24)
+        self.format_painter_button.setToolTip("Format übertragen")
+        self.format_painter_button.clicked.connect(self._toggle_format_painter)
+        self.format_toolbar.addWidget(self.format_painter_button)
         self.format_toolbar.addAction(self.link_action)
         self.format_toolbar.addSeparator()
         self.format_toolbar.addAction(self.paste_rich_action)
@@ -1321,15 +1371,16 @@ class MainWindow(QMainWindow):
 
     def _reset_window_layout(self) -> None:
         """Stellt die übersichtliche V1.3.2-Standardanordnung wieder her."""
-        for dock in (self.properties_dock, self.symbols_dock, self.overview_dock):
+        for dock in (self.properties_dock, self.symbols_dock, self.drawing_dock, self.overview_dock):
             self.removeDockWidget(dock)
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
         self.properties_dock.show()
         self.symbols_dock.show()
+        self.drawing_dock.show()
         self.overview_dock.hide()
         self.resizeDocks(
-            [self.properties_dock, self.symbols_dock],
-            [260, 500],
+            [self.symbols_dock, self.drawing_dock, self.properties_dock],
+            [420, 190, 260],
             Qt.Vertical,
         )
 
@@ -1379,16 +1430,283 @@ class MainWindow(QMainWindow):
         editor.set_font_point_size(value)
         editor.setFocus(Qt.OtherFocusReason)
 
-    def _choose_text_color(self) -> None:
-        editor = self._active_text_editor()
-        if editor is None:
+    def _selected_format_source(self):
+        """Ermittelt exakt ein sichtbares Quellobjekt für den Formatpinsel."""
+        selected = self.scene.selectedItems()
+        logical = []
+        seen = set()
+
+        for item in selected:
+            current = item
+            while current is not None:
+                object_id = getattr(current, "object_id", None)
+                drawing_id = getattr(current, "drawing_id", None)
+                relation_id = getattr(current, "relation_id", None)
+                key = None
+                if object_id is not None:
+                    key = ("node", object_id)
+                elif drawing_id is not None:
+                    key = ("drawing", drawing_id)
+                elif relation_id is not None:
+                    key = ("relation", relation_id)
+                if key is not None:
+                    if key not in seen:
+                        logical.append((key, current))
+                        seen.add(key)
+                    break
+                current = current.parentItem()
+
+        if len(logical) != 1:
+            return None
+        return logical[0]
+
+    def _capture_format_payload(self):
+        source = self._selected_format_source()
+        if source is None:
+            return None
+
+        (kind, source_id), item = source
+        if kind == "node":
+            state = self.model.active_map["object_states"].get(source_id, {})
+            keys = (
+                "shape", "fill_color", "border_color", "text_color",
+                "border_width", "corner_radius",
+            )
+            return {
+                "kind": "node",
+                "format": {key: state.get(key) for key in keys if key in state},
+            }
+
+        if kind == "drawing":
+            data = self.scene.drawing_controller.data(source_id)
+            dtype = str(data.get("type", ""))
+            if dtype == "rectangle":
+                keys = ("fill_color", "border_color", "border_width", "opacity")
+                return {
+                    "kind": "rectangle",
+                    "format": {key: data.get(key) for key in keys if key in data},
+                }
+            if dtype in {"line", "arrow"}:
+                keys = ("color", "width")
+                return {
+                    "kind": "segment",
+                    "format": {key: data.get(key) for key in keys if key in data},
+                }
+            if dtype == "text":
+                # Textformat als Rich-Text-Zeichenformat des ersten Zeichens.
+                try:
+                    cursor = item.textCursor()
+                    cursor.setPosition(0)
+                    cursor.movePosition(cursor.Right, cursor.KeepAnchor, 1)
+                    fmt = cursor.charFormat()
+                    return {
+                        "kind": "text",
+                        "format": {
+                            "font_family": fmt.fontFamily(),
+                            "font_size": fmt.fontPointSize(),
+                            "font_weight": int(fmt.fontWeight()),
+                            "italic": bool(fmt.fontItalic()),
+                            "underline": bool(fmt.fontUnderline()),
+                            "color": fmt.foreground().color().name(),
+                        },
+                    }
+                except Exception:
+                    return {"kind": "text", "format": {"color": data.get("color", "#333333")}}
+
+        return None
+
+    def _start_format_painter(self) -> None:
+        payload = self._capture_format_payload()
+        if payload is None:
+            self.statusBar().showMessage(
+                "Format übertragen: zuerst genau ein Objekt auswählen.",
+                3500,
+            )
+            if hasattr(self, "format_painter_button"):
+                self.format_painter_button.setChecked(False)
             return
-        current = editor.textCursor().charFormat().foreground().color()
-        color = QColorDialog.getColor(current if current.isValid() else QColor("#202020"), self, "Textfarbe")
-        if color.isValid():
+        self._format_painter_payload = payload
+        if hasattr(self, "format_painter_button"):
+            self.format_painter_button.setChecked(True)
+        self.statusBar().showMessage(
+            "Formatpinsel aktiv – Zielobjekt anklicken. Esc bricht ab.",
+            5000,
+        )
+
+    def _toggle_format_painter(self, checked: bool) -> None:
+        if checked:
+            self._start_format_painter()
+        else:
+            self._cancel_format_painter()
+
+    def _cancel_format_painter(self) -> None:
+        self._format_painter_payload = None
+        if hasattr(self, "format_painter_button"):
+            self.format_painter_button.blockSignals(True)
+            self.format_painter_button.setChecked(False)
+            self.format_painter_button.blockSignals(False)
+
+    @staticmethod
+    def _logical_item(item):
+        current = item
+        while current is not None:
+            if getattr(current, "object_id", None) is not None:
+                return ("node", current.object_id, current)
+            drawing_id = getattr(current, "drawing_id", None)
+            if drawing_id is not None:
+                return ("drawing", drawing_id, current)
+            relation_id = getattr(current, "relation_id", None)
+            if relation_id is not None:
+                return ("relation", relation_id, current)
+            current = current.parentItem()
+        return None
+
+    def _apply_format_painter_to_item(self, clicked_item) -> bool:
+        payload = self._format_painter_payload
+        if payload is None:
+            return False
+
+        logical = self._logical_item(clicked_item)
+        if logical is None:
+            return False
+
+        kind, target_id, item = logical
+        applied = False
+        self.scene.push_undo()
+
+        if payload["kind"] == "node" and kind == "node":
+            state = self.model.active_map["object_states"].get(target_id)
+            if state is not None:
+                state.update(payload["format"])
+                self.model.touch()
+                applied = True
+
+        elif kind == "drawing":
+            data = self.scene.drawing_controller.data(target_id)
+            dtype = str(data.get("type", ""))
+
+            if payload["kind"] == "rectangle" and dtype == "rectangle":
+                data.update(payload["format"])
+                self.model.touch()
+                applied = True
+
+            elif payload["kind"] == "segment" and dtype in {"line", "arrow"}:
+                data.update(payload["format"])
+                self.model.touch()
+                applied = True
+
+            elif payload["kind"] == "text" and dtype == "text":
+                try:
+                    cursor = item.textCursor()
+                    cursor.select(cursor.Document)
+                    from PySide6.QtGui import QTextCharFormat
+                    fmt = QTextCharFormat()
+                    f = payload["format"]
+                    if f.get("font_family"):
+                        fmt.setFontFamily(str(f["font_family"]))
+                    if float(f.get("font_size", 0) or 0) > 0:
+                        fmt.setFontPointSize(float(f["font_size"]))
+                    if "font_weight" in f:
+                        fmt.setFontWeight(int(f["font_weight"]))
+                    fmt.setFontItalic(bool(f.get("italic", False)))
+                    fmt.setFontUnderline(bool(f.get("underline", False)))
+                    if f.get("color"):
+                        fmt.setForeground(QColor(str(f["color"])))
+                    cursor.mergeCharFormat(fmt)
+                    item.setTextCursor(cursor)
+                    data["html"] = item.toHtml()
+                    data["text"] = item.toPlainText()
+                    self.model.touch()
+                    applied = True
+                except Exception:
+                    pass
+
+        if applied:
+            self.scene.rebuild()
+            self._cancel_format_painter()
+            self.statusBar().showMessage("Format übertragen.", 2000)
+            return True
+
+        # Snapshot wieder aus Undo entfernen, wenn nichts geändert wurde.
+        if self.scene.undo_stack:
+            self.scene.undo_stack.pop()
+        self.statusBar().showMessage(
+            "Dieses Format passt nicht zum gewählten Zielobjekt.",
+            3000,
+        )
+        return True
+
+    def _context_color_target(self):
+        """Ermittelt das Element, auf das der globale Farbknopf wirkt."""
+        editor = self._active_text_editor()
+        if editor is not None:
+            current = editor.textCursor().charFormat().foreground().color()
+            return ("text", editor, current if current.isValid() else QColor("#202020"))
+
+        drawing_ids = self.scene.drawing_controller.selected_drawing_ids()
+        if drawing_ids:
+            drawing_id = drawing_ids[0]
+            data = self.scene.drawing_controller.data(drawing_id)
+            dtype = str(data.get("type", ""))
+            if dtype == "rectangle":
+                current = QColor(str(data.get("fill_color", "#fff2a8")))
+            else:
+                current = QColor(str(data.get("color", "#3b3b3b")))
+            return ("drawing", drawing_id, current)
+
+        for item in self.scene.selectedItems():
+            object_id = getattr(item, "object_id", None)
+            if object_id in self.model.active_map.get("object_states", {}):
+                state = self.model.active_map["object_states"][object_id]
+                return ("node", object_id, QColor(str(state.get("fill_color", "#ffffff"))))
+
+        return None
+
+    def _set_color_action_preview(self, color: QColor | None) -> None:
+        if color is None or not color.isValid():
+            self.text_color_action.setIcon(QIcon())
+            return
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(color)
+        painter = QPainter(pixmap)
+        painter.setPen(QPen(QColor("#6b7280"), 1))
+        painter.drawRect(0, 0, 15, 15)
+        painter.end()
+        self.text_color_action.setIcon(QIcon(pixmap))
+
+    def _choose_context_color(self) -> None:
+        target = self._context_color_target()
+        if target is None:
+            return
+
+        kind, target_id, current = target
+        color = QColorDialog.getColor(current, self, "Farbe auswählen")
+        if not color.isValid():
+            return
+
+        if kind == "text":
+            editor = target_id
             editor.set_text_color(color)
             editor.setFocus(Qt.OtherFocusReason)
-            self._update_format_controls()
+        elif kind == "drawing":
+            drawing_id = target_id
+            data = self.scene.drawing_controller.data(drawing_id)
+            if data.get("type") == "rectangle":
+                self.scene.drawing_controller.apply_fill_color(color.name())
+            else:
+                self.scene.drawing_controller.apply_line_color(color.name())
+        elif kind == "node":
+            object_id = target_id
+            self.scene.push_undo()
+            self.model.set_node_color(object_id, "fill_color", color.name())
+            self._rebuild_and_reselect(object_id)
+
+        self._set_color_action_preview(color)
+        self._update_format_controls()
+
+    # Kompatibilität für ältere interne Aufrufe.
+    def _choose_text_color(self) -> None:
+        self._choose_context_color()
 
     def _insert_link(self) -> None:
         editor = self._active_text_editor()
@@ -1400,34 +1718,86 @@ class MainWindow(QMainWindow):
             editor.setFocus(Qt.OtherFocusReason)
             self._update_format_controls()
 
+    def _selected_text_format(self):
+        """Liest das sichtbare Textformat auch dann, wenn gerade nicht editiert wird.
+
+        Das behebt den irreführenden Fall, dass die Schriftgrößenanzeige einfach
+        den Wert des zuletzt bearbeiteten Textes stehen lässt.
+        """
+        source = self._selected_format_source()
+        if source is None:
+            return None
+
+        (kind, source_id), item = source
+        text_item = None
+
+        if kind == "node":
+            text_item = getattr(item, "label", None)
+        elif kind == "drawing":
+            data = self.scene.drawing_controller.data(source_id)
+            if str(data.get("type", "")) == "text":
+                text_item = item
+
+        if text_item is None:
+            return None
+
+        try:
+            document = text_item.document()
+            if document is None or document.characterCount() <= 1:
+                return text_item.textCursor().charFormat()
+
+            cursor = QTextCursor(document)
+            cursor.setPosition(0)
+            cursor.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor)
+            return cursor.charFormat()
+        except (RuntimeError, ReferenceError):
+            return None
+
     def _update_format_controls(self) -> None:
         editor = self._active_text_editor()
         enabled = editor is not None
-        actions = (self.bold_action, self.italic_action, self.underline_action,
-                   self.bullet_action, self.numbered_action,
-                   self.text_color_action, self.link_action)
-        for action in actions:
+        text_actions = (self.bold_action, self.italic_action, self.underline_action,
+                        self.bullet_action, self.numbered_action, self.link_action)
+        for action in text_actions:
             action.setEnabled(enabled)
+
+        color_target = self._context_color_target()
+        self.text_color_action.setEnabled(color_target is not None)
+        self._set_color_action_preview(color_target[2] if color_target is not None else None)
+
         self.paste_rich_action.setEnabled(True)
         if hasattr(self, "font_size_spin"):
+            # Schriftgröße ist während der Texteingabe änderbar. Außerhalb der
+            # Texteingabe zeigt das Feld trotzdem die echte Größe der Auswahl.
             self.font_size_spin.setEnabled(enabled)
-        if not enabled:
-            for action in actions:
-                action.blockSignals(True); action.setChecked(False); action.blockSignals(False)
-            return
-        try:
-            cursor = editor.textCursor()
-            char_fmt = cursor.charFormat()
-        except (RuntimeError, ReferenceError):
-            self.scene.editing_item = None
-            self._update_format_controls()
-            return
+
+        if editor is not None:
+            try:
+                cursor = editor.textCursor()
+                char_fmt = cursor.charFormat()
+            except (RuntimeError, ReferenceError):
+                self.scene.editing_item = None
+                self._update_format_controls()
+                return
+        else:
+            char_fmt = self._selected_text_format()
+            if char_fmt is None:
+                for action in text_actions:
+                    action.blockSignals(True)
+                    action.setChecked(False)
+                    action.blockSignals(False)
+                return
+
+            # Nicht im Editiermodus: nur anzeigen, nicht als Textbearbeitung
+            # behandeln. Fett/Kursiv/Unterstrichen dürfen den sichtbaren
+            # Zustand aber korrekt widerspiegeln.
+            cursor = None
         states = {
             self.bold_action: int(char_fmt.fontWeight()) >= 700,
             self.italic_action: char_fmt.fontItalic(),
             self.underline_action: char_fmt.fontUnderline(),
         }
-        current_list = cursor.currentList()
+        current_list = cursor.currentList() if cursor is not None else None
         list_style = current_list.format().style() if current_list is not None else None
         from PySide6.QtGui import QTextListFormat
         states[self.bullet_action] = list_style == QTextListFormat.ListDisc

@@ -11,7 +11,7 @@
     "id": "project-58e4c0f2-709e-4cee-8087-d4b27d4addf9",
     "title": "Serviceeinsatz planen",
     "created": "2026-08-12T18:27:12.448037+00:00",
-    "modified": "2026-08-12T21:27:57+02:00",
+    "modified": "2026-08-12T21:37:17+02:00",
     "active_map_id": "map-00b74daf-c9e4-4c6d-9e23-38ec34ec5cf7"
   },
   "objects": {
@@ -2077,6 +2077,32 @@
           "y": -348.28037499999994,
           "text": "Serviceprocess",
           "html": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta charset=\"utf-8\" /><style type=\"text/css\">\np, li { white-space: pre-wrap; }\nhr { height: 1px; border-width: 0; }\nli.unchecked::marker { content: \"\\2610\"; }\nli.checked::marker { content: \"\\2612\"; }\n</style></head><body style=\" font-family:'Segoe UI'; font-size:9pt; font-weight:400; font-style:normal;\">\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:32pt; font-weight:700;\">Serviceprocess</span></p></body></html>",
+          "color": "#3b3b3b",
+          "z": 5.0,
+          "anchor_object_id": null,
+          "offset_x": 0.0,
+          "offset_y": 0.0
+        },
+        "drawing-eb5c1f1b-9d4a-4fb4-a476-0307b3591963": {
+          "id": "drawing-eb5c1f1b-9d4a-4fb4-a476-0307b3591963",
+          "type": "text",
+          "x": 303.71493531249985,
+          "y": -637.6002284374997,
+          "text": "Tesssff",
+          "html": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta charset=\"utf-8\" /><style type=\"text/css\">\np, li { white-space: pre-wrap; }\nhr { height: 1px; border-width: 0; }\nli.unchecked::marker { content: \"\\2610\"; }\nli.checked::marker { content: \"\\2612\"; }\n</style></head><body style=\" font-family:'Segoe UI'; font-size:9pt; font-weight:400; font-style:normal;\">\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">Tesssff</p></body></html>",
+          "color": "#3b3b3b",
+          "z": 5.0,
+          "anchor_object_id": null,
+          "offset_x": 0.0,
+          "offset_y": 0.0
+        },
+        "drawing-aef2c047-94a0-4a70-8309-ab0d44db4e01": {
+          "id": "drawing-aef2c047-94a0-4a70-8309-ab0d44db4e01",
+          "type": "text",
+          "x": -410.3168662499998,
+          "y": -661.7365146874996,
+          "text": "Text",
+          "html": "",
           "color": "#3b3b3b",
           "z": 5.0,
           "anchor_object_id": null,

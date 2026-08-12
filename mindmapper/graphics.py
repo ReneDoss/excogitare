@@ -10,12 +10,13 @@ import shiboken6
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData, QPointF, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import (
-    QAction, QBrush, QColor, QDesktopServices, QFont, QKeyEvent, QKeySequence, QPainter, QPainterPath, QPen, QPixmap,
+    QAction, QBrush, QColor, QDesktopServices, QFont, QKeyEvent, QKeySequence, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap,
     QTextCharFormat, QTextCursor, QTextListFormat
 )
 from PySide6.QtWidgets import (
     QApplication,
     QGraphicsItem,
+    QGraphicsEllipseItem,
     QGraphicsPathItem,
     QGraphicsPixmapItem,
     QGraphicsRectItem,
@@ -31,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from .model import ProjectModel, new_id
+from .drawing import DrawingController
 
 
 def _qt_valid(obj) -> bool:
@@ -340,6 +342,10 @@ class EditableNodeText(QGraphicsTextItem):
         if html != getattr(self, "_original_html", html):
             self.owner.scene_owner.commit_snapshot(getattr(self, "_undo_snapshot", None))
             self.owner.model.set_rich_text(self.owner.object_id, html, plain)
+        # Keine alte Textmarkierung stehen lassen, sobald die Bearbeitung endet.
+        cursor = self.textCursor()
+        cursor.clearSelection()
+        self.setTextCursor(cursor)
         self.setTextInteractionFlags(Qt.NoTextInteraction)
         self.clearFocus()
         if self.owner.scene_owner.editing_item is self:
@@ -494,6 +500,37 @@ class EditableNodeText(QGraphicsTextItem):
 
 
 
+class RelationGuideHandle(QGraphicsEllipseItem):
+    """Verschiebbarer Führungspunkt einer Knotenverbindung."""
+
+    def __init__(self, relation: "RelationItem") -> None:
+        super().__init__(-6.0, -6.0, 12.0, 12.0, relation)
+        self.relation = relation
+        self.setBrush(QBrush(QColor("#ffffff")))
+        self.setPen(QPen(QColor("#2563eb"), 1.5))
+        self.setZValue(30)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        self.setCursor(Qt.SizeAllCursor)
+        self.setVisible(False)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        self.relation.scene_owner.prepare_selection_click(
+            self.relation,
+            event.modifiers(),
+            node_id=None,
+        )
+        self.relation.scene_owner.push_undo()
+        event.accept()
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        self.relation.set_manual_route(event.scenePos(), save=False)
+        event.accept()
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        self.relation.set_manual_route(event.scenePos(), save=True)
+        event.accept()
+
+
 class RelationItem(QGraphicsPathItem):
     def __init__(
         self,
@@ -507,8 +544,13 @@ class RelationItem(QGraphicsPathItem):
         self.target = target
         self.branch_type = int(branch_type)
         self.relation_id = relation_id
+        self.scene_owner = source.scene_owner
         self.setZValue(-10)
         self.setPen(QPen(QColor("#607080"), 2.0))
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.guide_handle = RelationGuideHandle(self)
         source.relations.append(self)
         target.relations.append(self)
 
@@ -680,6 +722,75 @@ class RelationItem(QGraphicsPathItem):
         path.cubicTo(c1, c2, end)
         return path
 
+    def shape(self) -> QPainterPath:
+        # Breite unsichtbare Trefferfläche; die sichtbare Linie bleibt schlank.
+        stroker = QPainterPathStroker()
+        stroker.setWidth(max(14.0, self.pen().widthF() + 12.0))
+        return stroker.createStroke(self.path())
+
+    def _relation_data(self) -> dict | None:
+        if self.relation_id is None:
+            return None
+        return self.source.model.data["relations"].get(self.relation_id)
+
+    def _manual_route(self) -> QPointF | None:
+        data = self._relation_data()
+        if not data or "route_x" not in data or "route_y" not in data:
+            return None
+        return QPointF(float(data["route_x"]), float(data["route_y"]))
+
+    def set_manual_route(self, scene_pos: QPointF, save: bool = True) -> None:
+        data = self._relation_data()
+        if data is None:
+            return
+        data["route_x"] = float(scene_pos.x())
+        data["route_y"] = float(scene_pos.y())
+        if save:
+            self.source.model.touch()
+        self.update_path()
+
+    def reset_manual_route(self) -> None:
+        if self.relation_id is None:
+            return
+        self.scene_owner.push_undo()
+        self.source.model.reset_relation_route(self.relation_id)
+        self.update_path()
+
+    def delete_relation(self) -> None:
+        if self.relation_id is None:
+            return
+        self.scene_owner.push_undo()
+        self.source.model.remove_relation(self.relation_id)
+        self.scene_owner.rebuild()
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemSelectedHasChanged and hasattr(self, "guide_handle"):
+            self.guide_handle.setVisible(bool(value))
+            if bool(value):
+                route = self._manual_route()
+                self.guide_handle.setPos(route if route is not None else self.path().pointAtPercent(0.5))
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() == Qt.LeftButton:
+            self.scene_owner.prepare_selection_click(
+                self,
+                event.modifiers(),
+                node_id=None,
+            )
+        super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event: QGraphicsSceneContextMenuEvent) -> None:
+        menu = QMenu()
+        reset_action = menu.addAction("Verbindung zurücksetzen")
+        delete_action = menu.addAction("Verbindung löschen")
+        chosen = menu.exec(event.screenPos())
+        if chosen is reset_action:
+            self.reset_manual_route()
+        elif chosen is delete_action:
+            self.delete_relation()
+        event.accept()
+
     def update_path(self) -> None:
         source_rect = self.source.sceneBoundingRect()
         target_rect = self.target.sceneBoundingRect()
@@ -712,9 +823,27 @@ class RelationItem(QGraphicsPathItem):
             c1 = QPointF(start.x() + dx, start.y())
             c2 = QPointF(end.x() - dx, end.y())
 
+        route = self._manual_route()
         path = QPainterPath(start)
-        path.cubicTo(c1, c2, end)
+        if route is None:
+            path.cubicTo(c1, c2, end)
+        else:
+            # Zwei weiche Teilkurven laufen exakt durch den verschobenen Führungspunkt.
+            if branch_type in {1, 2}:
+                c1a = QPointF((start.x() + route.x()) * 0.5, start.y())
+                c2a = QPointF((start.x() + route.x()) * 0.5, route.y())
+                c1b = QPointF((route.x() + end.x()) * 0.5, route.y())
+                c2b = QPointF((route.x() + end.x()) * 0.5, end.y())
+            else:
+                c1a = QPointF(start.x(), (start.y() + route.y()) * 0.5)
+                c2a = QPointF(route.x(), (start.y() + route.y()) * 0.5)
+                c1b = QPointF(route.x(), (route.y() + end.y()) * 0.5)
+                c2b = QPointF(end.x(), (route.y() + end.y()) * 0.5)
+            path.cubicTo(c1a, c2a, route)
+            path.cubicTo(c1b, c2b, end)
         self.setPath(path)
+        if self.isSelected():
+            self.guide_handle.setPos(route if route is not None else path.pointAtPercent(0.5))
 
     def update_source_group(self) -> None:
         """Aktualisiert alle Austrittspunkte dieses Elternknotens rekursiv korrekt."""
@@ -798,6 +927,11 @@ class ImageResizeHandle(QGraphicsRectItem):
         _cursor, image_format = image
         self._start_width = max(1.0, float(image_format.width()))
         self._start_height = max(1.0, float(image_format.height()))
+        self.editor.owner.scene_owner.prepare_selection_click(
+            self.editor.owner,
+            event.modifiers(),
+            node_id=self.editor.owner.object_id,
+        )
         self._snapshot = self.editor.owner.scene_owner.make_snapshot()
         self._dragging = True
         event.accept()
@@ -854,9 +988,12 @@ class NodeResizeHandle(QGraphicsRectItem):
         if event.button() != Qt.LeftButton:
             super().mousePressEvent(event)
             return
+        self.owner.scene_owner.prepare_selection_click(
+            self.owner,
+            event.modifiers(),
+            node_id=self.owner.object_id,
+        )
         self._snapshot = self.owner.scene_owner.make_snapshot()
-        self.owner.scene_owner.set_active_node(self.owner.object_id)
-        self.owner.setSelected(True)
         event.accept()
 
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
@@ -1533,9 +1670,13 @@ class NodeItem(QGraphicsRectItem):
             event.accept()
             return
 
+        self.scene_owner.prepare_selection_click(
+            self,
+            event.modifiers(),
+            node_id=self.object_id,
+        )
         self._drag_start_pos = self.pos()
         self._drag_undo_snapshot = self.scene_owner.make_snapshot()
-        self.scene_owner.set_active_node(self.object_id)
         self.scene_owner.begin_group_drag(self)
         super().mousePressEvent(event)
         self.scene_owner.begin_reparent_preview(self)
@@ -1818,11 +1959,68 @@ class MapScene(QGraphicsScene):
         self.group_drag_anchor_id: str | None = None
         self.editing_item: EditableNodeText | None = None
         self.details_request_handler = None
+        self.format_painter_handler = None
+        self.format_painter_cancel_handler = None
+        self.drawing_controller = DrawingController(self, model)
+        self.selectionChanged.connect(self._sync_visible_selection_owner)
         self.preview_path = QGraphicsPathItem()
         self.preview_path.setZValue(-5)
         self.preview_path.setPen(QPen(QColor("#3b82f6"), 2.0))
         self.setSceneRect(QRectF(-5000, -5000, 10000, 10000))
         self.rebuild()
+
+    def prepare_selection_click(
+        self,
+        owner: QGraphicsItem,
+        modifiers,
+        node_id: str | None = None,
+    ) -> None:
+        """Einheitliches Auswahlverhalten nach dem Inkscape-Prinzip.
+
+        Ein normaler Klick macht genau das angeklickte logische Objekt aktiv.
+        Strg/Shift dürfen weiterhin eine Mehrfachauswahl aufbauen.
+        """
+        multi = bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+        if not multi:
+            self.clearSelection()
+            owner.setSelected(True)
+
+        # Ein alter aktiver Knoten darf nicht "hängen bleiben", wenn sichtbar
+        # ein anderes Objekt (Box, Pfeil, Linie, Text, Verbindung) gewählt wird.
+        self.active_node_id = node_id
+
+    def logical_owner_for_item(self, item: QGraphicsItem | None):
+        """Liefert das sichtbare logische Objekt hinter Griffen/Text-Kindern."""
+        current = item
+        while current is not None:
+            if isinstance(current, NodeItem):
+                return current
+            if isinstance(current, RelationItem):
+                return current
+            if getattr(current, "drawing_id", None) is not None:
+                return current
+            current = current.parentItem()
+        return None
+
+    def _sync_visible_selection_owner(self) -> None:
+        selected = self.selectedItems()
+        if not selected:
+            return
+
+        node_ids = []
+        has_non_node = False
+        for item in selected:
+            owner = self.logical_owner_for_item(item)
+            if isinstance(owner, NodeItem):
+                if owner.object_id not in node_ids:
+                    node_ids.append(owner.object_id)
+            elif owner is not None:
+                has_non_node = True
+
+        if has_non_node and not node_ids:
+            self.active_node_id = None
+        elif len(node_ids) == 1 and not has_non_node:
+            self.active_node_id = node_ids[0]
 
     def request_details(self, object_id: str, section: str) -> None:
         """Leitet einen Klick auf ein Knotendetail an das Hauptfenster weiter."""
@@ -2049,13 +2247,18 @@ class MapScene(QGraphicsScene):
         return True
 
     def delete_selected_node(self) -> bool:
+        """Löscht ausschließlich tatsächlich markierte Knoten.
+
+        active_node_id dient weiterhin der Tastaturnavigation, darf aber niemals
+        als unsichtbare Lösch-Auswahl verwendet werden.
+        """
         selected_ids = {
             item.object_id
             for item in self.selectedItems()
             if isinstance(item, NodeItem)
         }
-        if not selected_ids and self.active_node_id is not None:
-            selected_ids = {self.active_node_id}
+        if not selected_ids:
+            return False
         return self.delete_object_ids(selected_ids)
 
     def toggle_selected_collapsed(self) -> bool:
@@ -2248,8 +2451,14 @@ class MapScene(QGraphicsScene):
         return True
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        transform = self.views()[0].transform() if self.views() else None
+        clicked = self.itemAt(event.scenePos(), transform)
+
+        # Zuerst immer eine laufende Texteingabe sauber beenden, wenn der Klick
+        # außerhalb des aktuellen Editors liegt. Das muss VOR Zeichenwerkzeugen
+        # passieren, sonst können alter Knotentext und neuer freier Text zugleich
+        # im Editier-/Markierungszustand bleiben.
         if self.editing_item is not None:
-            clicked = self.itemAt(event.scenePos(), self.views()[0].transform() if self.views() else None)
             item = clicked
             inside_editor = False
             while item is not None:
@@ -2257,17 +2466,51 @@ class MapScene(QGraphicsScene):
                     inside_editor = True
                     break
                 item = item.parentItem()
+
             if not inside_editor:
-                self.editing_item.finish_edit()
+                previous_editor = self.editing_item
+                previous_editor.finish_edit()
+
+                # finish_edit() kann die Szene neu aufbauen; Treffer deshalb
+                # anschließend mit der aktuellen Szene erneut bestimmen.
+                transform = self.views()[0].transform() if self.views() else None
+                clicked = self.itemAt(event.scenePos(), transform)
+
+        # Formatpinsel hat im Einmal-Modus Vorrang vor normalen Werkzeugen.
+        painter_handler = getattr(self, "format_painter_handler", None)
+        if event.button() == Qt.LeftButton and callable(painter_handler):
+            if clicked is not None and painter_handler(clicked):
                 event.accept()
-                # Nach dem Rebuild den Klick normal an die neue Szene weitergeben.
-                super().mousePressEvent(event)
                 return
+
+        if self.drawing_controller.mouse_press(event):
+            return
+
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if self.drawing_controller.mouse_move(event):
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if self.drawing_controller.mouse_release(event):
+            return
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.editing_item is not None:
             super().keyPressEvent(event)
+            return
+
+        # Wie in einem Zeichenprogramm: Escape beendet jedes aktive
+        # Zeichenwerkzeug und kehrt zuverlässig zur Auswahl zurück.
+        if event.key() == Qt.Key_Escape:
+            cancel_painter = getattr(self, "format_painter_cancel_handler", None)
+            if callable(cancel_painter):
+                cancel_painter()
+            self.drawing_controller.select_mode()
+            event.accept()
             return
 
         if event.matches(QKeySequence.Paste):
@@ -2313,9 +2556,39 @@ class MapScene(QGraphicsScene):
                 return
 
         if event.key() == Qt.Key_Delete:
+            # Reihenfolge ist absichtlich strikt nach sichtbarer Auswahl:
+            # Zeichnung -> Knotenverbindung -> Knoten. Keine versteckte Fallback-Auswahl.
+            drawing_ids = self.drawing_controller.selected_drawing_ids()
+            if drawing_ids:
+                self.push_undo()
+                drawings = self.model.active_map.setdefault("drawings", {})
+                for drawing_id in drawing_ids:
+                    drawings.pop(drawing_id, None)
+                self.model.touch()
+                self.rebuild()
+                event.accept()
+                return
+
+            selected_relations = [
+                item for item in self.selectedItems()
+                if isinstance(item, RelationItem)
+            ]
+            if selected_relations:
+                self.push_undo()
+                for relation_item in selected_relations:
+                    if relation_item.relation_id is not None:
+                        self.model.remove_relation(relation_item.relation_id)
+                self.rebuild()
+                event.accept()
+                return
+
             if self.delete_selected_node():
                 event.accept()
                 return
+
+            # Nichts sichtbar ausgewählt: Entf tut nichts.
+            event.accept()
+            return
 
         navigation = {
             Qt.Key_Left: self.navigate_parent,
@@ -2711,6 +2984,9 @@ class MapScene(QGraphicsScene):
         self.preview_path.setPen(QPen(QColor("#3b82f6"), 2.0))
         self.preview_path.setVisible(False)
         self.addItem(self.preview_path)
+
+        self.drawing_controller.set_model(self.model)
+        self.drawing_controller.rebuild()
 
         visible_ids = self._visible_object_ids()
 

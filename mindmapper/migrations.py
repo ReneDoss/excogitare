@@ -44,6 +44,11 @@ def migrate_document(raw: dict[str, Any]) -> dict[str, Any]:
         obj.setdefault("status", "")
         obj.setdefault("node_type", "topic")
 
+    # Freie grafische Annotationen sind map-spezifisch und optional.
+    for map_data in data.get("maps", {}).values():
+        if isinstance(map_data, dict):
+            map_data.setdefault("drawings", {})
+
     data.setdefault("generator", {})["name"] = APP_NAME
     data["generator"]["version"] = APP_VERSION
     return data
