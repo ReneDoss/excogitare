@@ -8,7 +8,7 @@ Master complexity.
 
 **Your engineering desk. Reinvented.**
 
-![Alt-Text](./vision.png "new vision")
+![Alt-Text](./Hauskauf.jpg "new vision")
 
 ## About
 
