@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import base64
 import json
+import math
 from pathlib import Path
 
 import shiboken6
 
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QMimeData, QPointF, QRectF, Qt, QTimer, QUrl
+from PySide6.QtCore import QMimeData, QPointF, QRectF, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction, QBrush, QColor, QDesktopServices, QFont, QKeyEvent, QKeySequence, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap,
     QTextCharFormat, QTextCursor, QTextListFormat
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from .model import ProjectModel, new_id
 from .drawing import DrawingController
+from .richtext_support import clipboard_image_html
 
 
 def _qt_valid(obj) -> bool:
@@ -74,45 +75,6 @@ def _make_detail_icon(kind: str, size: int = 15) -> QPixmap:
     painter.end()
     return pixmap
 
-def _clipboard_image_html(max_width: int = 700) -> str | None:
-    """Konvertiert das aktuelle Zwischenablagebild in selbständiges HTML.
-
-    Das PNG wird als Data-URI eingebettet. Dadurch bleibt ein Screenshot auch
-    nach Speichern, Schließen und erneutem Öffnen vollständig im Projekt.
-    """
-    clipboard = QApplication.clipboard()
-    mime = clipboard.mimeData()
-    if not mime.hasImage():
-        return None
-
-    image = clipboard.image()
-    if image.isNull():
-        return None
-
-    display_width = image.width()
-    display_height = image.height()
-    if display_width > max_width:
-        scale = max_width / float(display_width)
-        display_width = max_width
-        display_height = max(1, round(display_height * scale))
-
-    encoded = QByteArray()
-    buffer = QBuffer(encoded)
-    if not buffer.open(QIODevice.WriteOnly):
-        return None
-    try:
-        if not image.save(buffer, "PNG"):
-            return None
-    finally:
-        buffer.close()
-
-    payload = base64.b64encode(bytes(encoded)).decode("ascii")
-    return (
-        f'<img src="data:image/png;base64,{payload}" '
-        f'width="{display_width}" height="{display_height}" />'
-    )
-
-
 class EditableNodeText(QGraphicsTextItem):
     """Rich-Text-Editor direkt im Knoten.
 
@@ -130,9 +92,11 @@ class EditableNodeText(QGraphicsTextItem):
         else:
             self.setPlainText(text)
         self.setTextInteractionFlags(Qt.NoTextInteraction)
+        self.setAcceptedMouseButtons(Qt.LeftButton)
         state = owner.model.active_map["object_states"][owner.object_id]
         self.setDefaultTextColor(QColor(state.get("text_color", "#202020")))
         self._geometry_update_pending = False
+        self._image_resize_in_progress = False
         self.document().contentsChanged.connect(self._document_changed)
         # contentsChanged wird teilweise ausgelöst, bevor Qt das Rich-Text-Layout
         # vollständig neu berechnet hat. documentSizeChanged liefert die
@@ -166,6 +130,14 @@ class EditableNodeText(QGraphicsTextItem):
 
     def _schedule_geometry_update(self) -> None:
         owner = getattr(self, "owner", None)
+
+        # Beim Skalieren eines Inline-Bildes bleibt die Knotenbox während des
+        # Drags bewusst stabil. Erst beim Loslassen wird sie einmal an das
+        # neue Dokumentmaß angepasst. Das verhindert, dass der Resize-Griff
+        # bei Bildern in einem eigenen Absatz unter der Maus "wegläuft".
+        if getattr(self, "_image_resize_in_progress", False):
+            return
+
         if not _qt_valid(self) or not _qt_valid(owner) or self._geometry_update_pending:
             return
         self._geometry_update_pending = True
@@ -187,18 +159,50 @@ class EditableNodeText(QGraphicsTextItem):
             return
 
     def _first_image(self):
-        """Findet das erste eingebettete Bild im QTextDocument."""
+        """Findet das erste eingebettete Bild mit EXAKTER Zeichenposition.
+
+        Wichtig:
+        QTextCursor.charFormat() auf einer Auswahl [pos, pos+1] kann unter
+        PySide6/Qt6 bereits das Format des folgenden Zeichens melden. Genau das
+        zeigte die Diagnose: gespeicherte Bildposition 22, das echte Bild lag
+        aber bei 23..24.
+
+        QTextFragment.position() liefert dagegen die tatsächliche Position des
+        U+FFFC-Inline-Objekts im QTextDocument.
+        """
         document = self.document()
-        count = max(0, document.characterCount() - 1)
+        block = document.begin()
 
-        for position in range(count):
-            cursor = QTextCursor(document)
-            cursor.setPosition(position)
-            cursor.setPosition(position + 1, QTextCursor.KeepAnchor)
-            fmt = cursor.charFormat()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid():
+                    fmt = fragment.charFormat()
+                    if fmt.isImageFormat():
+                        position = int(fragment.position())
 
-            if fmt.isImageFormat():
-                return cursor, fmt.toImageFormat()
+                        cursor = QTextCursor(document)
+                        cursor.setPosition(position)
+                        cursor.setPosition(
+                            position + max(1, int(fragment.length())),
+                            QTextCursor.KeepAnchor,
+                        )
+
+                        # Ein Bildfragment ist normalerweise genau ein Zeichen.
+                        # Falls Qt mehrere Zeichen im Fragment meldet, wird nur
+                        # das erste Inline-Objekt selektiert.
+                        if cursor.selectionEnd() - cursor.selectionStart() > 1:
+                            cursor.setPosition(position)
+                            cursor.setPosition(
+                                position + 1,
+                                QTextCursor.KeepAnchor,
+                            )
+
+                        return cursor, fmt.toImageFormat()
+
+                iterator += 1
+            block = block.next()
 
         return None
 
@@ -243,7 +247,75 @@ class EditableNodeText(QGraphicsTextItem):
         block_rect = self.document().documentLayout().blockBoundingRect(block)
         y = float(block_rect.top() + line.y())
 
-        return QRectF(x, y, width, height)
+        # QTextLayout liefert die Cursorposition am Inline-Objekt sehr exakt,
+        # die sichtbare Rasterkante des Bildes kann unter Qt jedoch noch um
+        # wenige Pixel rechts/unten über diese logische Box hinausragen
+        # (Antialiasing / Inline-Object-Metrik). Der Auswahlrahmen soll die
+        # tatsächlich sichtbare Bildkante vollständig umfassen.
+        visual_pad_right = 3.0
+        visual_pad_bottom = 2.0
+        return QRectF(
+            x,
+            y,
+            width + visual_pad_right,
+            height + visual_pad_bottom,
+        )
+
+    def _set_image_size_at(
+        self,
+        image_position: int,
+        width: float,
+        height: float,
+    ) -> None:
+        """Skaliert exakt das Bildzeichen, das beim Mouse-Press gewählt wurde.
+
+        Während eines Drags wird nicht erneut nach dem "ersten Bild" gesucht.
+        Dadurch bleibt die Referenz stabil, auch wenn Qt das Textlayout durch
+        die Größenänderung neu berechnet.
+        """
+        document = self.document()
+        count = max(0, document.characterCount() - 1)
+        if image_position < 0 or image_position >= count:
+            return
+
+        cursor = QTextCursor(document)
+        cursor.setPosition(int(image_position))
+        cursor.setPosition(int(image_position) + 1, QTextCursor.KeepAnchor)
+
+        fmt = cursor.charFormat()
+        if not fmt.isImageFormat():
+            return
+
+        image_format = fmt.toImageFormat()
+        image_format.setWidth(float(width))
+        image_format.setHeight(float(height))
+
+        # Exakt das vorhandene Bildzeichen ersetzen. Die Position stammt
+        # aus QTextFragment.position() und zeigt deshalb auf das tatsächliche
+        # Inline-Bildobjekt.
+        cursor.beginEditBlock()
+        cursor.clearSelection()
+        cursor.setPosition(int(image_position))
+        cursor.deleteChar()
+        cursor.setPosition(int(image_position))
+        cursor.insertImage(image_format)
+        cursor.endEditBlock()
+
+        document.markContentsDirty(int(image_position), 1)
+
+        try:
+            document.documentLayout().documentSize()
+        except (RuntimeError, ReferenceError):
+            pass
+
+        try:
+            self.update()
+            self.owner.update()
+            scene = self.scene()
+            if scene is not None:
+                scene.update()
+        except (RuntimeError, ReferenceError):
+            pass
 
     def _set_image_size(self, width: float, height: float) -> None:
         image = self._first_image()
@@ -251,12 +323,35 @@ class EditableNodeText(QGraphicsTextItem):
             return
 
         cursor, image_format = image
+
+        # Die Zeichenposition explizit sichern und das einzelne Bildzeichen
+        # anschließend neu selektieren. So funktioniert die Formatänderung
+        # sowohl bei "Petrol [Bild]" als auch bei
+        # "Text\\n[Bild]" zuverlässig.
+        start = int(cursor.selectionStart())
+        document = self.document()
+        image_cursor = QTextCursor(document)
+        image_cursor.setPosition(start)
+        image_cursor.setPosition(start + 1, QTextCursor.KeepAnchor)
+
         image_format.setWidth(float(width))
         image_format.setHeight(float(height))
-        cursor.setCharFormat(image_format)
+        image_cursor.setCharFormat(image_format)
 
+        # Nur Bildrahmen live nachführen. Die Knotenbox wird beim Release
+        # einmalig angepasst.
         self._update_image_hover()
-        self._schedule_geometry_update()
+        self.viewport_update_safe()
+
+    def viewport_update_safe(self) -> None:
+        """Fordert nur ein Neuzeichnen an, ohne die Knotengeometrie umzubauen."""
+        try:
+            self.update()
+            owner = getattr(self, "owner", None)
+            if _qt_valid(owner):
+                owner.update()
+        except (RuntimeError, ReferenceError):
+            pass
 
     def _commit_image_resize(self) -> None:
         """Übernimmt die neue Bildgröße dauerhaft ins Projektmodell."""
@@ -278,7 +373,29 @@ class EditableNodeText(QGraphicsTextItem):
         if rect is None:
             self.image_hover_frame.setVisible(False)
             self.image_resize_handle.setVisible(False)
+
+            # Falls kein Bild aktiv ist, darf der normale Knotengriff wieder
+            # erscheinen.
+            node_handle = getattr(self.owner, "resize_handle", None)
+            if _qt_valid(node_handle):
+                node_handle.setVisible(bool(self.owner.isSelected()))
             return
+
+        # WICHTIG:
+        # Bei Bildern, die fast die gesamte Knotenbreite/-höhe belegen,
+        # liegen Bild-Resize-Griff und Knoten-Resize-Griff praktisch exakt
+        # übereinander. Der Knotengriff sitzt als direkter NodeItem-Kindknoten
+        # in einer höheren Stacking-Ebene und fängt dann den Maus-Drag ab.
+        #
+        # Das erklärt, warum der Benzinkanister skalierbar war:
+        # Sein Inline-Bildgriff liegt NICHT am unteren rechten Knoteneck.
+        # Bei Motorrad/Haus/etc. überlagern sich die beiden Griffe dagegen.
+        #
+        # Solange das Bild aktiv ist, wird deshalb ausschließlich der
+        # Bild-Resize-Griff angeboten.
+        node_handle = getattr(self.owner, "resize_handle", None)
+        if _qt_valid(node_handle):
+            node_handle.setVisible(False)
 
         self.image_hover_frame.setRect(rect)
         self.image_hover_frame.setVisible(True)
@@ -291,8 +408,39 @@ class EditableNodeText(QGraphicsTextItem):
     def _hide_image_hover(self) -> None:
         if getattr(self.image_resize_handle, "_dragging", False):
             return
+
         self.image_hover_frame.setVisible(False)
         self.image_resize_handle.setVisible(False)
+
+        # Nach Verlassen des Bildes wieder den normalen Knotengriff zeigen,
+        # sofern der Knoten ausgewählt ist.
+        node_handle = getattr(self.owner, "resize_handle", None)
+        if _qt_valid(node_handle):
+            node_handle.setVisible(bool(self.owner.isSelected()))
+            if self.owner.isSelected():
+                node_handle.setPos(self.owner.rect().bottomRight())
+
+    def mousePressEvent(self, event) -> None:
+        """Inline-Bild zuerst behandeln, bevor der Klick den ganzen Knoten selektiert.
+
+        Klick innerhalb des Bildes:
+        - Bildrahmen + Resize-Griff anzeigen
+        - Knoten darf selektiert bleiben, aber der Klick wird hier verbraucht
+        - keine Texteingabe starten
+
+        Klick außerhalb des Bildes:
+        - normales bisheriges Verhalten
+        """
+        rect = self._image_rect()
+        if rect is not None and rect.contains(event.pos()):
+            self.owner.scene_owner.clearSelection()
+            self.owner.setSelected(True)
+            self.owner.scene_owner.set_active_node(self.owner.object_id)
+            self._update_image_hover()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
 
     def hoverMoveEvent(self, event) -> None:
         rect = self._image_rect()
@@ -441,7 +589,7 @@ class EditableNodeText(QGraphicsTextItem):
 
         # Bilder haben Vorrang vor HTML/Text. Das Windows-Snipping-Tool stellt
         # den Screenshot als Bild-MIME-Typ bereit.
-        image_html = _clipboard_image_html()
+        image_html = clipboard_image_html()
         if image_html is not None:
             cursor.insertHtml(image_html)
         elif mime.hasHtml():
@@ -654,19 +802,27 @@ class RelationItem(QGraphicsPathItem):
         y = item.mapToScene(QPointF(0.0, item.underline_y())).y()
         branch_type = int(branch_type)
 
+        # Vertikale Verbindungen (oben/unten) liegen bewusst links vom Text.
+        # Dadurch läuft der Stamm nicht mehr durch "Neuer Knoten" bzw.
+        # "Neuer Unterknoten". Der Abstand ist unabhängig von der Textlänge.
+        # Vertikaler Anschluss exakt am linken Beginn der Unterstreichung.
+        # Dadurch gibt es am Kind keinen sichtbaren Überstand links vom Stamm.
+        vertical_x = rect.left()
+
         if outgoing:
             if branch_type == 2:
                 return QPointF(rect.left(), y)
-            if branch_type == 1:
+            elif branch_type == 1:
                 return QPointF(rect.right(), y)
+            return QPointF(vertical_x, y)
         else:
-            # Der Zielanschluss liegt jeweils auf der dem Elternknoten
-            # zugewandten Seite der Unterstreichung.
+            # Der Zielanschluss liegt immer direkt auf der sichtbaren
+            # Unterstreichung.
             if branch_type == 2:
                 return QPointF(rect.right(), y)
             if branch_type == 1:
                 return QPointF(rect.left(), y)
-        return None
+            return QPointF(vertical_x, y)
 
     @classmethod
     def _target_anchor(
@@ -791,16 +947,258 @@ class RelationItem(QGraphicsPathItem):
             self.delete_relation()
         event.accept()
 
+    def _is_underline_target(self) -> bool:
+        state = self.target.model.active_map["object_states"].get(
+            self.target.object_id, {}
+        )
+        return state.get("shape", "rounded") == "underline"
+
+    def _underline_group(self) -> list["RelationItem"]:
+        """Unterstrichene Geschwister derselben Anschlussseite.
+
+        Andere Knotentypen werden absichtlich nicht aufgenommen.
+        """
+        group = [
+            relation
+            for relation in self.source.relations
+            if relation.source is self.source
+            and int(relation.branch_type) == int(self.branch_type)
+            and relation.isVisible()
+            and relation._is_underline_target()
+        ]
+        if int(self.branch_type) in {1, 2}:
+            group.sort(
+                key=lambda relation:
+                relation.target.sceneBoundingRect().center().y()
+            )
+        else:
+            group.sort(
+                key=lambda relation:
+                relation.target.sceneBoundingRect().center().x()
+            )
+        return group
+
+    def _underline_group_path(
+        self,
+        source_rect: QRectF,
+        end: QPointF,
+    ) -> QPainterPath | None:
+        """Gemeinsamer Stamm für unterstrichene Geschwister.
+
+        Regeln:
+        - rechts: Stamm links vor der Gruppe
+        - links:  Stamm rechts vor der Gruppe
+        - unten:  Austritt aus der UNTERKANTE des Elternknotens, links versetzt
+        - oben:   Austritt aus der OBERKANTE des Elternknotens, links versetzt
+        - von dort läuft der gemeinsame Stamm senkrecht
+        - keine Knotenposition wird verändert
+        """
+        group = self._underline_group()
+        if not group:
+            return None
+
+        branch_type = int(self.branch_type)
+
+        # Sichtbare Zielpunkte auf der Unterstreichung.
+        target_points: list[QPointF] = []
+        for relation in group:
+            target_rect = relation.target.sceneBoundingRect()
+            underline_y = relation.target.mapToScene(
+                QPointF(0.0, relation.target.underline_y())
+            ).y()
+
+            if branch_type == 1:      # Gruppe rechts
+                point = QPointF(target_rect.left(), underline_y)
+            elif branch_type == 2:    # Gruppe links
+                point = QPointF(target_rect.right(), underline_y)
+            else:                     # oben / unten
+                # Linke Linienkante ist stabil bei unterschiedlich langem Text.
+                point = QPointF(target_rect.left(), underline_y)
+
+            target_points.append(point)
+
+        # --------------------------------------------------------------
+        # Rechte / linke Gruppe:
+        # vertikaler Stamm zwischen Eltern und Zielgruppe.
+        # --------------------------------------------------------------
+        if branch_type in {1, 2}:
+            representative = group[(len(group) - 1) // 2]
+            if representative.relation_id is not None:
+                start_point = representative.source.mapToScene(
+                    representative.source.relation_exit_point(
+                        representative.relation_id
+                    )
+                )
+            else:
+                start_point = representative._dynamic_source_anchor(source_rect)
+
+            if branch_type == 1:
+                trunk_x = min(point.x() for point in target_points) - 28.0
+                dx = max(45.0, abs(trunk_x - start_point.x()) * 0.45)
+                c1 = QPointF(start_point.x() + dx, start_point.y())
+                c2 = QPointF(trunk_x - dx * 0.30, start_point.y())
+            else:
+                trunk_x = max(point.x() for point in target_points) + 28.0
+                dx = max(45.0, abs(start_point.x() - trunk_x) * 0.45)
+                c1 = QPointF(start_point.x() - dx, start_point.y())
+                c2 = QPointF(trunk_x + dx * 0.30, start_point.y())
+
+            path = QPainterPath(start_point)
+            path.cubicTo(c1, c2, QPointF(trunk_x, start_point.y()))
+            path.lineTo(QPointF(trunk_x, end.y()))
+            path.lineTo(end)
+            return path
+
+        # --------------------------------------------------------------
+        # Obere / untere Gruppe:
+        # Der Stamm tritt DIREKT aus Ober-/Unterkante aus.
+        # Der Austrittspunkt liegt bewusst links im Elternknoten.
+        # Danach läuft der Stamm senkrecht. Kein Haken, kein seitlicher Umweg.
+        # --------------------------------------------------------------
+        # Fester linker Anschlussbereich: deutlich vor dem Text und
+        # unabhängig von unterschiedlich langen Beschriftungen.
+        # Vertikaler Gruppenstamm exakt am linken Beginn der Unterstreichung.
+        exit_x = source_rect.left()
+
+        if branch_type == 3:  # unten
+            start_point = QPointF(exit_x, source_rect.bottom())
+        else:                 # oben
+            start_point = QPointF(exit_x, source_rect.top())
+
+        path = QPainterPath(start_point)
+
+        # Gemeinsamer senkrechter Stamm direkt bis zur Höhe des Zieles.
+        path.lineTo(QPointF(exit_x, end.y()))
+
+        # Horizontaler Abzweig zur linken Kante der Unterstreichung.
+        path.lineTo(end)
+        return path
+
+    def _kept_group_trunk_path(
+        self,
+        source_rect: QRectF,
+        target_rect: QRectF,
+    ) -> QPainterPath | None:
+        """Verbindet einen ehemals unterstrichenen Knoten weiter am Gruppenstamm.
+
+        Der kurze Abzweig allein reicht nicht: liegt das neue Rechteck unterhalb
+        bzw. außerhalb der bisherigen Unterstrichen-Liste, muss der gemeinsame
+        Stamm bis auf die Höhe des Rechtecks verlängert werden.
+        """
+        data = self._relation_data()
+        if not data or not data.get("keep_group_trunk", False):
+            return None
+
+        branch_type = int(self.branch_type)
+
+        underline_relations = [
+            relation
+            for relation in self.source.relations
+            if relation is not self
+            and relation.source is self.source
+            and int(relation.branch_type) == branch_type
+            and relation.isVisible()
+            and relation._is_underline_target()
+        ]
+        if not underline_relations:
+            return None
+
+        # Sichtbare Y-Lagen der verbliebenen Unterstrichen-Einträge.
+        underline_ys = [
+            rel.target.mapToScene(
+                QPointF(0.0, rel.target.underline_y())
+            ).y()
+            for rel in underline_relations
+        ]
+        min_y = min(underline_ys)
+        max_y = max(underline_ys)
+
+        # --------------------------------------------------------------
+        # Rechte / linke Gruppe:
+        # vorhandenen vertikalen Gruppenstamm bis zur neuen Rechteckhöhe
+        # verlängern und dann waagerecht zum Rechteck abzweigen.
+        # --------------------------------------------------------------
+        if branch_type == 1:
+            trunk_x = min(
+                rel.target.sceneBoundingRect().left()
+                for rel in underline_relations
+            ) - 28.0
+            end = QPointF(target_rect.left(), target_rect.center().y())
+
+            if end.y() > max_y:
+                stem_start_y = max_y
+            elif end.y() < min_y:
+                stem_start_y = min_y
+            else:
+                stem_start_y = end.y()
+
+            path = QPainterPath(QPointF(trunk_x, stem_start_y))
+            path.lineTo(QPointF(trunk_x, end.y()))
+            path.lineTo(end)
+            return path
+
+        if branch_type == 2:
+            trunk_x = max(
+                rel.target.sceneBoundingRect().right()
+                for rel in underline_relations
+            ) + 28.0
+            end = QPointF(target_rect.right(), target_rect.center().y())
+
+            if end.y() > max_y:
+                stem_start_y = max_y
+            elif end.y() < min_y:
+                stem_start_y = min_y
+            else:
+                stem_start_y = end.y()
+
+            path = QPainterPath(QPointF(trunk_x, stem_start_y))
+            path.lineTo(QPointF(trunk_x, end.y()))
+            path.lineTo(end)
+            return path
+
+        # --------------------------------------------------------------
+        # Oben / unten:
+        # Der gemeinsame Stamm liegt am linken Beginn der Unterstrichen-Liste.
+        # Auch hier bis zur neuen Rechteckhöhe verlängern.
+        # --------------------------------------------------------------
+        trunk_x = source_rect.left()
+
+        if target_rect.center().x() >= trunk_x:
+            end = QPointF(target_rect.left(), target_rect.center().y())
+        else:
+            end = QPointF(target_rect.right(), target_rect.center().y())
+
+        if branch_type == 3:  # unten
+            stem_start_y = max_y
+        else:                 # oben
+            stem_start_y = min_y
+
+        path = QPainterPath(QPointF(trunk_x, stem_start_y))
+        path.lineTo(QPointF(trunk_x, end.y()))
+        path.lineTo(end)
+        return path
+
     def update_path(self) -> None:
         source_rect = self.source.sceneBoundingRect()
         target_rect = self.target.sceneBoundingRect()
 
-        if self.relation_id is not None:
+        source_underline = self._underline_anchor(
+            self.source,
+            self.branch_type,
+            outgoing=True,
+        )
+
+        # Bei einem unterstrichenen Mutterknoten muss ein vertikaler Ast
+        # direkt an dessen sichtbarer letzter Linie beginnen. Sonst entsteht
+        # zwischen Unterstreichung und Kind eine optische Lücke.
+        if source_underline is not None and int(self.branch_type) in {3, 4}:
+            start = source_underline
+        elif self.relation_id is not None:
             start = self.source.mapToScene(
                 self.source.relation_exit_point(self.relation_id)
             )
         else:
-            start = self._underline_anchor(self.source, self.branch_type, outgoing=True)
+            start = source_underline
             if start is None:
                 start = self._dynamic_source_anchor(source_rect)
         end = self._target_anchor(self.target, target_rect, self.branch_type)
@@ -824,8 +1222,89 @@ class RelationItem(QGraphicsPathItem):
             c2 = QPointF(end.x() - dx, end.y())
 
         route = self._manual_route()
-        path = QPainterPath(start)
+
+        # Ein aus einer Unterstrichen-Gruppe in Rechteck/Rund umgewandelter
+        # Knoten behält seinen Anschluss am gemeinsamen Stamm.
+        kept_group_path = None
         if route is None:
+            kept_group_path = self._kept_group_trunk_path(
+                source_rect,
+                target_rect,
+            )
+
+        # --------------------------------------------------------------
+        # Unterstrichen -> Unterstrichen, vertikal:
+        #
+        # Der Stamm läuft vom Anschluss der Mutterlinie SENKRECHT bis auf
+        # die Unterstreichung des Kindes. Die X-Position wird von der Mutter
+        # geerbt und NICHT am Kind neu berechnet. Dadurch läuft die Verbindung
+        # links am Text vorbei – exakt wie in der roten Referenzmarkierung.
+        #
+        # Falls Mutter und Kind horizontal versetzt sind, endet der Stamm
+        # auf derselben X-Position innerhalb der Kinder-Unterstreichung;
+        # nur wenn diese X-Position außerhalb der sichtbaren Linie läge,
+        # wird auf deren Linienbereich begrenzt.
+        vertical_underline_path = None
+        source_state = self.source.model.active_map["object_states"].get(
+            self.source.object_id, {}
+        )
+        target_state = self.target.model.active_map["object_states"].get(
+            self.target.object_id, {}
+        )
+        if (
+            route is None
+            and branch_type in {3, 4}
+            and source_state.get("shape", "rounded") == "underline"
+            and target_state.get("shape", "rounded") == "underline"
+        ):
+            target_line_y = self.target.mapToScene(
+                QPointF(0.0, self.target.underline_y())
+            ).y()
+
+            # Saubere Stammgeometrie:
+            # Der Stamm liegt am linken Beginn der Kinder-Unterstreichung.
+            # So entsteht unten kein linker Überstand.
+            target_x = target_rect.left()
+
+            # Startpunkt der Mutter ebenfalls auf die linke Unterstreichungskante
+            # ziehen. Damit liegt die Abzweigung weiter links.
+            source_line_y = self.source.mapToScene(
+                QPointF(0.0, self.source.underline_y())
+            ).y()
+            source_x = source_rect.left()
+            start = QPointF(source_x, source_line_y)
+
+            vertical_underline_path = QPainterPath(start)
+            vertical_underline_path.lineTo(
+                QPointF(target_x, target_line_y)
+            )
+
+        # Unterstrichene Geschwister derselben Seite werden als Gruppe
+        # geroutet. Manuell geführte Relationen behalten dagegen bewusst
+        # ihre individuelle Geometrie.
+        grouped_path = None
+        if (
+            kept_group_path is None
+            and vertical_underline_path is None
+            and route is None
+            and self._is_underline_target()
+        ):
+            grouped_path = self._underline_group_path(source_rect, end)
+
+        if kept_group_path is not None:
+            path = kept_group_path
+        elif vertical_underline_path is not None:
+            path = vertical_underline_path
+        else:
+            path = grouped_path if grouped_path is not None else QPainterPath(start)
+
+        if kept_group_path is not None:
+            pass
+        elif vertical_underline_path is not None:
+            pass
+        elif grouped_path is not None:
+            pass
+        elif route is None:
             path.cubicTo(c1, c2, end)
         else:
             # Zwei weiche Teilkurven laufen exakt durch den verschobenen Führungspunkt.
@@ -856,42 +1335,133 @@ class RelationItem(QGraphicsPathItem):
 
 
 class BranchExitHandle(QGraphicsRectItem):
-    """Klickfläche direkt auf einem Austrittspunkt des Elternknotens.
+    """Klickfläche für Ein-/Ausklappen eines einzelnen Astes.
 
-    Jeder Baumast besitzt seinen eigenen Zustand. Im ausgeklappten Zustand ist
-    die Fläche unsichtbar; im eingeklappten Zustand erscheint dort ein Plus.
+    Ausgeklappt:
+        unsichtbare kleine Klickfläche direkt am Austrittspunkt.
+
+    Eingeklappt:
+        kurzer Zweigstumpf + leicht abgesetzter Plus-Kreis.
+
+    Wichtig:
+        Ein Linksklick toggelt IMMER den Astzustand. Der Ast selbst wird dabei
+        nicht selektiert und seine manuelle Linienführung nicht aktiviert.
     """
 
+    STUB_LENGTH = 22.0
+    SYMBOL_GAP = 6.0
+    SYMBOL_RADIUS = 6.0
+
     def __init__(self, owner: "NodeItem", relation_id: str) -> None:
-        super().__init__(-13.0, -13.0, 26.0, 26.0, owner)
+        # Genug Platz für den sichtbaren Stumpf und das Plus.
+        # Die Klickfläche bleibt ein eigenes Item oberhalb der Relation.
+        super().__init__(-10.0, -10.0, 58.0, 58.0, owner)
         self.owner = owner
         self.relation_id = relation_id
         self.setPen(Qt.NoPen)
         self.setBrush(Qt.NoBrush)
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.LeftButton)
-        self.setZValue(50)
+        self.setZValue(80)
         self.setCursor(Qt.PointingHandCursor)
+
+    def _direction(self) -> QPointF:
+        relation = self.owner.model.data["relations"].get(self.relation_id, {})
+        branch_type = int(relation.get("branch_type", 1))
+        if branch_type == 2:
+            return QPointF(-1.0, 0.0)
+        if branch_type == 4:
+            return QPointF(0.0, -1.0)
+        if branch_type == 3:
+            return QPointF(0.0, 1.0)
+        return QPointF(1.0, 0.0)
+
+    def boundingRect(self) -> QRectF:
+        # Symmetrisch groß genug für alle vier Richtungen.
+        reach = self.STUB_LENGTH + self.SYMBOL_GAP + 2.0 * self.SYMBOL_RADIUS + 6.0
+        return QRectF(-reach, -reach, 2.0 * reach, 2.0 * reach)
+
+    def shape(self) -> QPainterPath:
+        # Im ausgeklappten Zustand nur eine kompakte Klickfläche am Austritt.
+        # Eingeklappt zusätzlich Stumpf und Plus gut anklickbar machen.
+        relation = self.owner.model.data["relations"].get(self.relation_id, {})
+        collapsed = bool(relation.get("collapsed", False))
+
+        path = QPainterPath()
+        path.addEllipse(QPointF(0.0, 0.0), 10.0, 10.0)
+
+        if collapsed:
+            d = self._direction()
+            symbol_center = QPointF(
+                d.x() * (self.STUB_LENGTH + self.SYMBOL_GAP + self.SYMBOL_RADIUS),
+                d.y() * (self.STUB_LENGTH + self.SYMBOL_GAP + self.SYMBOL_RADIUS),
+            )
+
+            # Breite Klickzone entlang des Stumpfs.
+            stroker = QPainterPathStroker()
+            stroker.setWidth(14.0)
+            stub = QPainterPath(QPointF(0.0, 0.0))
+            stub.lineTo(
+                QPointF(
+                    d.x() * self.STUB_LENGTH,
+                    d.y() * self.STUB_LENGTH,
+                )
+            )
+            path.addPath(stroker.createStroke(stub))
+            path.addEllipse(symbol_center, 12.0, 12.0)
+
+        return path
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         relation = self.owner.model.data["relations"].get(self.relation_id, {})
         if not relation.get("collapsed", False):
             return
+
         state = self.owner.model.active_map["object_states"][self.owner.object_id]
         marker_color = QColor(state.get("border_color", "#4f5d75"))
-        pen = QPen(marker_color, max(1.6, float(state.get("border_width", 1.5))))
+        width = max(1.5, float(state.get("border_width", 1.5)))
+
+        pen = QPen(marker_color, width)
         pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
-        arm = 4.5
-        painter.drawLine(QPointF(-arm, 0.0), QPointF(arm, 0.0))
-        painter.drawLine(QPointF(0.0, -arm), QPointF(0.0, arm))
+        painter.setBrush(QColor("#ffffff"))
+
+        d = self._direction()
+        stub_end = QPointF(
+            d.x() * self.STUB_LENGTH,
+            d.y() * self.STUB_LENGTH,
+        )
+        painter.drawLine(QPointF(0.0, 0.0), stub_end)
+
+        symbol_center = QPointF(
+            d.x() * (self.STUB_LENGTH + self.SYMBOL_GAP + self.SYMBOL_RADIUS),
+            d.y() * (self.STUB_LENGTH + self.SYMBOL_GAP + self.SYMBOL_RADIUS),
+        )
+
+        painter.drawEllipse(
+            symbol_center,
+            self.SYMBOL_RADIUS,
+            self.SYMBOL_RADIUS,
+        )
+
+        arm = 3.2
+        painter.drawLine(
+            QPointF(symbol_center.x() - arm, symbol_center.y()),
+            QPointF(symbol_center.x() + arm, symbol_center.y()),
+        )
+        painter.drawLine(
+            QPointF(symbol_center.x(), symbol_center.y() - arm),
+            QPointF(symbol_center.x(), symbol_center.y() + arm),
+        )
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
+            # Entscheidend: IMMER toggeln. Nicht an RelationItem weiterreichen.
             self.owner.toggle_relation_collapsed(self.relation_id)
             event.accept()
             return
-        super().mousePressEvent(event)
+        event.accept()
 
 
 class ImageResizeHandle(QGraphicsRectItem):
@@ -914,6 +1484,9 @@ class ImageResizeHandle(QGraphicsRectItem):
         self._dragging = False
         self._start_width = 0.0
         self._start_height = 0.0
+        self._image_position = -1
+        self._press_scene_pos = QPointF()
+
 
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if event.button() != Qt.LeftButton:
@@ -924,35 +1497,47 @@ class ImageResizeHandle(QGraphicsRectItem):
         if image is None:
             return
 
-        _cursor, image_format = image
+        image_cursor, image_format = image
         self._start_width = max(1.0, float(image_format.width()))
         self._start_height = max(1.0, float(image_format.height()))
-        self.editor.owner.scene_owner.prepare_selection_click(
-            self.editor.owner,
-            event.modifiers(),
-            node_id=self.editor.owner.object_id,
+        self._image_position = int(image_cursor.selectionStart())
+        self._press_scene_pos = QPointF(event.scenePos())
+
+        # Der Bildrahmen ist bereits aktiv, wenn dieser Griff erreichbar ist.
+        # Keine erneute Knotenselektion hier: das verhindert Selection-Callbacks
+        # während des Beginns des Bild-Drags.
+        self.editor.owner.scene_owner.set_active_node(
+            self.editor.owner.object_id
         )
+
         self._snapshot = self.editor.owner.scene_owner.make_snapshot()
         self._dragging = True
+        self.editor._image_resize_in_progress = True
+        self.grabMouse()
         event.accept()
 
     def mouseMoveEvent(self, event: QGraphicsSceneMouseEvent) -> None:
         if not self._dragging:
             return
 
-        rect = self.editor._image_rect()
-        if rect is None:
-            return
+        # Größe ausschließlich aus dem Mausweg seit Mouse-Press ableiten.
+        # Damit hängt die Berechnung nicht von einem während des Drags
+        # wandernden QTextDocument-Layout oder Bildrechteck ab.
+        delta = event.scenePos() - self._press_scene_pos
+        new_width = max(30.0, self._start_width + float(delta.x()))
 
-        local = self.editor.mapFromScene(event.scenePos())
-        new_width = max(30.0, local.x() - rect.left())
         aspect = (
             self._start_height / self._start_width
             if self._start_width > 0.0
             else 1.0
         )
         new_height = max(20.0, new_width * aspect)
-        self.editor._set_image_size(new_width, new_height)
+
+        self.editor._set_image_size_at(
+            self._image_position,
+            new_width,
+            new_height,
+        )
         event.accept()
 
     def mouseReleaseEvent(self, event: QGraphicsSceneMouseEvent) -> None:
@@ -960,9 +1545,16 @@ class ImageResizeHandle(QGraphicsRectItem):
             return
 
         self._dragging = False
+        self.editor._image_resize_in_progress = False
+        try:
+            self.ungrabMouse()
+        except (RuntimeError, ReferenceError):
+            pass
+
         self.editor._commit_image_resize()
         self.editor.owner.scene_owner.commit_snapshot(self._snapshot)
         self._snapshot = None
+        self._image_position = -1
         self.editor._update_image_hover()
         event.accept()
 
@@ -1169,8 +1761,11 @@ class NodeItem(QGraphicsRectItem):
 
     def _content_x(self) -> float:
         """Linke Textposition einschließlich sichtbarer Typ-/Statussymbole."""
-        x = 10.0
-        gap = 8.0
+        state = self.model.active_map["object_states"].get(self.object_id, {})
+        # Unterstrichen ist der kompakte Listen-/Aufzählungstyp.
+        # Ohne Symbol darf der Text deutlich näher am Linienanfang beginnen.
+        x = 4.0 if state.get("shape", "rounded") == "underline" else 10.0
+        gap = 6.0 if state.get("shape", "rounded") == "underline" else 8.0
         symbol_item = getattr(self, "symbol_item", None)
         if _qt_valid(symbol_item) and symbol_item.text():
             x += max(18.0, symbol_item.boundingRect().width()) + gap
@@ -1227,9 +1822,13 @@ class NodeItem(QGraphicsRectItem):
 
     def update_content_positions(self) -> None:
         """Positioniert mehrzeiligen Text stabil am oberen Innenrand."""
-        x = 10.0
-        gap = 8.0
-        top = 10.0
+        state = self.model.active_map["object_states"].get(self.object_id, {})
+        underline_compact = state.get("shape", "rounded") == "underline"
+        x = 4.0 if underline_compact else 10.0
+        gap = 6.0 if underline_compact else 8.0
+        # Die sichtbare Unterstreichung liegt knapp unter dem Text.
+        # Weniger Innenrand spart bei Listenpunkten zusätzlich Höhe.
+        top = 5.0 if underline_compact else 10.0
 
         symbol_item = getattr(self, "symbol_item", None)
         if _qt_valid(symbol_item):
@@ -1561,46 +2160,85 @@ class NodeItem(QGraphicsRectItem):
         return result
 
     def relation_exit_point(self, relation_id: str) -> QPointF:
-        """Austrittspunkt eines konkreten Astes im lokalen Knotensystem."""
+        """Geordnetes Austrittslayout ohne Knotenbewegung.
+
+        links/rechts: Ziele von oben nach unten
+        oben/unten:   Ziele von links nach rechts
+        Danach werden die Austritte symmetrisch über die Knotenkante verteilt.
+        """
         relation = self.model.data["relations"].get(relation_id, {})
         branch_type = int(relation.get("branch_type", 1))
         state = self.model.active_map["object_states"][self.object_id]
         rect = self.rect()
 
         if state.get("shape", "rounded") == "underline" and branch_type in {1, 2}:
-            return QPointF(rect.right() if branch_type == 1 else rect.left(), self.underline_y())
+            return QPointF(
+                rect.right() if branch_type == 1 else rect.left(),
+                self.underline_y(),
+            )
 
         siblings = self._outgoing_tree_relations(branch_type)
         states = self.model.active_map["object_states"]
+
+        def target_center(rel_data: dict) -> tuple[float, float]:
+            child = states.get(rel_data.get("target_id"), {})
+            return (
+                float(child.get("x", 0.0)) + float(child.get("width", 180.0)) / 2.0,
+                float(child.get("y", 0.0)) + float(child.get("height", 54.0)) / 2.0,
+            )
+
         if branch_type in {3, 4}:
-            siblings.sort(key=lambda item: float(states.get(item[1].get("target_id"), {}).get("x", 0.0)))
+            siblings.sort(
+                key=lambda item: (
+                    target_center(item[1])[0],
+                    target_center(item[1])[1],
+                    item[0],
+                )
+            )
         else:
-            siblings.sort(key=lambda item: float(states.get(item[1].get("target_id"), {}).get("y", 0.0)))
+            siblings.sort(
+                key=lambda item: (
+                    target_center(item[1])[1],
+                    target_center(item[1])[0],
+                    item[0],
+                )
+            )
+
         ids = [item[0] for item in siblings]
         try:
             index = ids.index(relation_id)
         except ValueError:
             index = 0
         count = len(siblings)
-        margin = min(12.0, max(6.0, min(rect.width(), rect.height()) * 0.18))
-        target_state = states.get(relation.get("target_id"), {})
 
         if branch_type in {3, 4}:
-            minimum, maximum = rect.left() + margin, rect.right() - margin
-            if count <= 1:
-                target_center = float(target_state.get("x", 0.0)) + float(target_state.get("width", 180.0)) / 2.0
-                coordinate = max(minimum, min(maximum, target_center - self.scenePos().x()))
-            else:
-                coordinate = minimum + (maximum - minimum) * index / (count - 1)
-            return QPointF(coordinate, rect.bottom() if branch_type == 3 else rect.top())
-
-        minimum, maximum = rect.top() + margin, rect.bottom() - margin
-        if count <= 1:
-            target_center = float(target_state.get("y", 0.0)) + float(target_state.get("height", 54.0)) / 2.0
-            coordinate = max(minimum, min(maximum, target_center - self.scenePos().y()))
+            center = rect.center().x()
+            edge_length = max(1.0, rect.width())
         else:
-            coordinate = minimum + (maximum - minimum) * index / (count - 1)
-        return QPointF(rect.left() if branch_type == 2 else rect.right(), coordinate)
+            center = rect.center().y()
+            edge_length = max(1.0, rect.height())
+
+        # Harmonischer Fächer: kompakt, symmetrisch, Ecken bleiben frei.
+        usable_span = edge_length * 0.64
+        preferred_step = 18.0
+        span = 0.0 if count <= 1 else min(
+            usable_span,
+            preferred_step * (count - 1),
+        )
+
+        if count <= 1:
+            coordinate = center
+        else:
+            step = span / (count - 1)
+            coordinate = center - span / 2.0 + step * index
+
+        if branch_type == 2:
+            return QPointF(rect.left(), coordinate)
+        if branch_type == 1:
+            return QPointF(rect.right(), coordinate)
+        if branch_type == 4:
+            return QPointF(coordinate, rect.top())
+        return QPointF(coordinate, rect.bottom())
 
     def update_badge_position(self) -> None:
         for relation_id, handle in self.branch_exit_handles.items():
@@ -1702,6 +2340,16 @@ class NodeItem(QGraphicsRectItem):
         rename_action = QAction("Umbenennen", menu)
         rename_action.triggered.connect(self.label.begin_edit)
         menu.addAction(rename_action)
+
+        note_action = QAction("Notiz bearbeiten …", menu)
+        note_action.setToolTip("Notiz zu diesem Knoten anlegen oder bearbeiten")
+        note_action.triggered.connect(
+            lambda checked=False: self.scene_owner.request_details(
+                self.object_id,
+                "note",
+            )
+        )
+        menu.addAction(note_action)
 
         attachment_menu = menu.addMenu("Hyperlink / Anhang hinzufügen")
         add_file_action = attachment_menu.addAction("Datei(en) auswählen …")
@@ -1977,13 +2625,30 @@ class MapScene(QGraphicsScene):
     ) -> None:
         """Einheitliches Auswahlverhalten nach dem Inkscape-Prinzip.
 
-        Ein normaler Klick macht genau das angeklickte logische Objekt aktiv.
-        Strg/Shift dürfen weiterhin eine Mehrfachauswahl aufbauen.
+        Normaler Klick auf ein NICHT markiertes Objekt:
+            -> bisherige Auswahl aufheben und dieses Objekt auswählen.
+
+        Normaler Klick auf ein BEREITS markiertes Objekt:
+            -> bestehende Mehrfachauswahl erhalten.
+               Dadurch kann eine markierte Gruppe direkt gezogen werden,
+               ohne beim Anfassen wieder auseinanderzufallen.
+
+        Strg/Shift:
+            -> Mehrfachauswahl darf erweitert/reduziert werden.
         """
-        multi = bool(modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
-        if not multi:
-            self.clearSelection()
-            owner.setSelected(True)
+        multi_modifier = bool(
+            modifiers & (Qt.ControlModifier | Qt.ShiftModifier)
+        )
+
+        if not multi_modifier:
+            if owner.isSelected():
+                # Wichtig für Gruppenverschiebung:
+                # Eine vorhandene Mehrfachauswahl bleibt beim Anfassen eines
+                # bereits ausgewählten Elements vollständig bestehen.
+                pass
+            else:
+                self.clearSelection()
+                owner.setSelected(True)
 
         # Ein alter aktiver Knoten darf nicht "hängen bleiben", wenn sichtbar
         # ein anderes Objekt (Box, Pfeil, Linie, Text, Verbindung) gewählt wird.
@@ -2021,6 +2686,29 @@ class MapScene(QGraphicsScene):
             self.active_node_id = None
         elif len(node_ids) == 1 and not has_non_node:
             self.active_node_id = node_ids[0]
+
+    def comb_branches_for_node(self, parent_id: str) -> bool:
+        """Sortieren -> Seiten bestimmen -> harmonisch verteilen.
+
+        Ändert ausschließlich Relationen/Liniengeometrie.
+        """
+        if parent_id not in self.node_items:
+            return False
+
+        changed = self.model.resort_outgoing_relations_from_geometry(parent_id)
+        parent_item = self.node_items[parent_id]
+
+        for relation_item in list(parent_item.relations):
+            if relation_item.source is not parent_item:
+                continue
+            data = self.model.data["relations"].get(relation_item.relation_id, {})
+            relation_item.branch_type = int(
+                data.get("branch_type", relation_item.branch_type)
+            )
+            relation_item.update_path()
+
+        parent_item.update_badge_position()
+        return changed
 
     def request_details(self, object_id: str, section: str) -> None:
         """Leitet einen Klick auf ein Knotendetail an das Hauptfenster weiter."""
@@ -2111,7 +2799,25 @@ class MapScene(QGraphicsScene):
 
         item.label.begin_edit()
 
-    def create_child_for_selected(self) -> str | None:
+    def create_child_for_selected(
+        self,
+        preserve_underline_layout: bool = False,
+    ) -> str | None:
+        """Erzeugt einen Unterknoten strikt in der geerbten Wachstumsrichtung.
+
+        Grundregel:
+        Die Verbindung zum Elternknoten bestimmt die Wachstumsrichtung
+        dieses Schrittes. Bestehende Struktur wird nicht neu zentriert.
+
+        - rechts  -> neuer Bereich rechts vom Elternknoten
+        - links   -> neuer Bereich links vom Elternknoten
+        - unten   -> neuer Bereich unterhalb des Elternknotens
+        - oben    -> neuer Bereich oberhalb des Elternknotens
+
+        Mehrere Kinder derselben Richtung werden nur innerhalb dieses
+        Zielbereichs gestaffelt. Vorhandene Vorfahren und Geschwister
+        bleiben unangetastet.
+        """
         parent = self.selected_node()
         if parent is None:
             return None
@@ -2119,25 +2825,185 @@ class MapScene(QGraphicsScene):
         self.push_undo()
         parent_id = parent.object_id
         branch_type = self.model.effective_child_branch_type(parent_id)
+
+        states = self.model.active_map["object_states"]
+        parent_state = states.get(parent_id, {})
+        px = float(parent_state.get("x", 0.0))
+        py = float(parent_state.get("y", 0.0))
+        pw = float(parent_state.get("width", 180.0))
+        ph = float(parent_state.get("height", 54.0))
+
         template_child_id = self.model.last_child_id(
             parent_id,
             branch_type=branch_type,
         )
 
-        x, y = self.model.next_child_position(parent_id, branch_type=branch_type)
-        child_id = self.model.add_object("Neuer Unterknoten", x, y)
+        existing_ids = [
+            child_id
+            for child_id in self.model.child_ids_by_branch(
+                parent_id,
+                branch_type,
+            )
+            if child_id in states
+        ]
+
+        horizontal_gap = 86.0
+        vertical_gap = 34.0
+        default_width = 180.0
+        default_height = 54.0
+        underline_pitch = 30.0
+        underline_list = bool(existing_ids) and all(
+            states[cid].get("shape", "rounded") == "underline"
+            for cid in existing_ids
+        )
+
+        # --------------------------------------------------------------
+        # Erstes Kind:
+        # direkt in der geerbten Wachstumsrichtung.
+        # --------------------------------------------------------------
+        if not existing_ids:
+            x, y = self.model.next_child_position(
+                parent_id,
+                branch_type=branch_type,
+            )
+
+        else:
+            child_states = [states[cid] for cid in existing_ids]
+
+            # Kompakte Unterstrichen-Liste:
+            # bestehende Einträge bleiben exakt liegen; der neue Eintrag wird
+            # nur eine sichtbare Listenzeile weiter angehängt.
+            if underline_list:
+                if branch_type == 4:
+                    anchor = min(
+                        child_states,
+                        key=lambda st: float(st.get("y", 0.0)),
+                    )
+                    x = float(anchor.get("x", 0.0))
+                    y = min(float(st.get("y", 0.0)) for st in child_states) - underline_pitch
+                else:
+                    anchor = max(
+                        child_states,
+                        key=lambda st: float(st.get("y", 0.0)),
+                    )
+                    x = float(anchor.get("x", 0.0))
+                    y = max(float(st.get("y", 0.0)) for st in child_states) + underline_pitch
+
+            # ----------------------------------------------------------
+            # RECHTS:
+            # Alle Kinder bleiben rechts des Elternknotens.
+            # Neue Geschwister werden innerhalb dieser rechten Zone
+            # ausschließlich nach unten ergänzt.
+            # ----------------------------------------------------------
+            if branch_type == 1:
+                zone_x = max(
+                    px + pw + horizontal_gap,
+                    min(float(st.get("x", 0.0)) for st in child_states),
+                )
+                bottom = max(
+                    float(st.get("y", 0.0))
+                    + float(st.get("height", default_height))
+                    for st in child_states
+                )
+                x = zone_x
+                y = bottom + vertical_gap
+
+            # ----------------------------------------------------------
+            # LINKS:
+            # Alle Kinder bleiben links des Elternknotens.
+            # Neue Geschwister werden dort nach unten ergänzt.
+            # ----------------------------------------------------------
+            elif branch_type == 2:
+                # bestehende linke Zone beibehalten
+                zone_right = min(
+                    px - horizontal_gap,
+                    max(
+                        float(st.get("x", 0.0))
+                        + float(st.get("width", default_width))
+                        for st in child_states
+                    ),
+                )
+                # Breite des letzten/äußersten Knotens als Referenz
+                reference = max(
+                    child_states,
+                    key=lambda st:
+                    float(st.get("y", 0.0))
+                    + float(st.get("height", default_height)),
+                )
+                width = float(reference.get("width", default_width))
+                x = zone_right - width
+                bottom = max(
+                    float(st.get("y", 0.0))
+                    + float(st.get("height", default_height))
+                    for st in child_states
+                )
+                y = bottom + vertical_gap
+
+            # ----------------------------------------------------------
+            # UNTEN:
+            # Der neue Bereich wächst nur nach unten.
+            # Bestehende Knoten oberhalb bleiben exakt stehen.
+            # ----------------------------------------------------------
+            elif branch_type == 3:
+                # X-Position der bestehenden unteren Gruppe beibehalten.
+                anchor = max(
+                    child_states,
+                    key=lambda st:
+                    float(st.get("y", 0.0))
+                    + float(st.get("height", default_height)),
+                )
+                x = float(anchor.get("x", px))
+                bottom = max(
+                    float(st.get("y", 0.0))
+                    + float(st.get("height", default_height))
+                    for st in child_states
+                )
+                y = bottom + vertical_gap
+
+            # ----------------------------------------------------------
+            # OBEN:
+            # Der neue Bereich wächst nur nach oben.
+            # ----------------------------------------------------------
+            else:  # branch_type == 4
+                anchor = min(
+                    child_states,
+                    key=lambda st: float(st.get("y", 0.0)),
+                )
+                x = float(anchor.get("x", px))
+                top = min(
+                    float(st.get("y", 0.0))
+                    for st in child_states
+                )
+                y = top - vertical_gap - default_height
+
+        child_id = self.model.add_object(
+            "Neuer Unterknoten",
+            x,
+            y,
+        )
         self.model.add_relation(
             parent_id,
             child_id,
             "tree",
             branch_type=branch_type,
         )
-        if template_child_id is not None:
-            self.model.apply_child_template(template_child_id, child_id)
-        else:
-            self.model.apply_visual_template(parent_id, child_id)
 
-        self.model.arrange_hierarchy_from(parent_id)
+        if template_child_id is not None:
+            # Darstellung übernehmen, Position aber NICHT überschreiben.
+            self.model.apply_child_template(
+                template_child_id,
+                child_id,
+            )
+        else:
+            self.model.apply_visual_template(
+                parent_id,
+                child_id,
+            )
+
+        # Kein globaler Reflow.
+        # Nur der neue Knoten und die lokale Liniengeometrie kommen hinzu.
+        self.model.touch()
+
         self.rebuild()
         self._select_and_edit_node(child_id)
         return child_id
@@ -2160,8 +3026,129 @@ class MapScene(QGraphicsScene):
             else self.model.effective_child_branch_type(parent_id)
         )
 
+        states = self.model.active_map["object_states"]
+        current_state = states.get(current_id, {})
+        underline_append = current_state.get("shape", "rounded") == "underline"
+
         self.push_undo()
-        x, y = self.model.next_child_position(parent_id, branch_type=branch_type)
+
+        if underline_append:
+            # ----------------------------------------------------------
+            # Sonderregel fuer Strg+Enter bei "Unterstrichen":
+            #
+            # Bestehende Geschwister bleiben EXAKT liegen.
+            # Der neue Knoten wird nur am Ende seiner Seitengruppe
+            # angehaengt. Kein arrange_children(), kein Zentrieren,
+            # kein Verschieben der Vorfahren.
+            # ----------------------------------------------------------
+            group_ids = [
+                child_id
+                for child_id in self.model.child_ids_by_branch(
+                    parent_id,
+                    branch_type,
+                )
+                if child_id in states
+                and states[child_id].get("shape", "rounded") == "underline"
+            ]
+
+            # Normalabstand des Listentyps "Unterstrichen".
+            # Bewusst nach den sichtbaren Linien/Textzeilen und NICHT nach
+            # den 54 px hohen unsichtbaren Auswahlrechtecken bemessen.
+            underline_pitch = 30.0
+
+            if group_ids:
+                group_states = [states[child_id] for child_id in group_ids]
+
+                if branch_type == 4:
+                    # Obere Gruppe: eine kompakte Listenzeile weiter nach oben.
+                    anchor = min(
+                        group_states,
+                        key=lambda st: float(st.get("y", 0.0)),
+                    )
+                    x = float(anchor.get("x", 0.0))
+                    top = min(float(st.get("y", 0.0)) for st in group_states)
+                    y = top - underline_pitch
+                else:
+                    # Rechts, links und unten: eine kompakte Listenzeile tiefer.
+                    anchor = max(
+                        group_states,
+                        key=lambda st: float(st.get("y", 0.0)),
+                    )
+                    x = float(anchor.get("x", 0.0))
+                    y = max(
+                        float(st.get("y", 0.0))
+                        for st in group_states
+                    ) + underline_pitch
+            else:
+                x, y = self.model.next_child_position(
+                    parent_id,
+                    branch_type=branch_type,
+                )
+        else:
+            # ----------------------------------------------------------
+            # Normale Geschwister bei Strg+Enter:
+            #
+            # Nicht erneut die erste Standardposition des Elternknotens
+            # verwenden – genau das führte zur Überlagerung.
+            #
+            # Wachstumsregel:
+            #   rechts/links -> Geschwister nach unten anhängen
+            #   unten/oben   -> Geschwister nach rechts anhängen
+            #
+            # Bestehende Knoten bleiben unverändert.
+            # ----------------------------------------------------------
+            group_ids = [
+                child_id
+                for child_id in self.model.child_ids_by_branch(
+                    parent_id,
+                    branch_type,
+                )
+                if child_id in states
+            ]
+
+            normal_vertical_gap = 34.0
+            normal_horizontal_gap = 86.0
+
+            if not group_ids:
+                x, y = self.model.next_child_position(
+                    parent_id,
+                    branch_type=branch_type,
+                )
+            else:
+                group_states = [states[child_id] for child_id in group_ids]
+
+                if branch_type in {1, 2}:
+                    # Rechte/linke Seitengruppe wächst nur nach unten.
+                    anchor = max(
+                        group_states,
+                        key=lambda st:
+                        float(st.get("y", 0.0))
+                        + float(st.get("height", 54.0)),
+                    )
+                    x = float(anchor.get("x", current_state.get("x", 0.0)))
+                    bottom = max(
+                        float(st.get("y", 0.0))
+                        + float(st.get("height", 54.0))
+                        for st in group_states
+                    )
+                    y = bottom + normal_vertical_gap
+                else:
+                    # Obere/untere Gruppe wächst quer zur Ast-Richtung
+                    # nach rechts weiter.
+                    anchor = max(
+                        group_states,
+                        key=lambda st:
+                        float(st.get("x", 0.0))
+                        + float(st.get("width", 180.0)),
+                    )
+                    y = float(anchor.get("y", current_state.get("y", 0.0)))
+                    right = max(
+                        float(st.get("x", 0.0))
+                        + float(st.get("width", 180.0))
+                        for st in group_states
+                    )
+                    x = right + normal_horizontal_gap
+
         sibling_id = self.model.add_object("Neuer Knoten", x, y)
         self.model.add_relation(
             parent_id,
@@ -2169,9 +3156,15 @@ class MapScene(QGraphicsScene):
             "tree",
             branch_type=branch_type,
         )
+
         # Ein Geschwister übernimmt die Darstellung des aktuellen Knotens.
         self.model.apply_child_template(current_id, sibling_id)
-        self.model.arrange_hierarchy_from(parent_id)
+
+        # Strg+Enter folgt jetzt ebenfalls der Wachstumsregel:
+        # kein globaler Reflow, keine Neuzentrierung, keine Verschiebung
+        # vorhandener Geschwister, Eltern oder Vorfahren.
+        self.model.touch()
+
         self.rebuild()
         self._select_and_edit_node(sibling_id)
         return sibling_id
@@ -2420,7 +3413,7 @@ class MapScene(QGraphicsScene):
         if self._paste_nodes_from_clipboard():
             return True
 
-        image_html = _clipboard_image_html()
+        image_html = clipboard_image_html()
         if image_html is None:
             return False
 
@@ -2532,13 +3525,25 @@ class MapScene(QGraphicsScene):
         ctrl_only = bool(modifiers & Qt.ControlModifier) and not bool(
             modifiers & (Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier)
         )
+        shift_only = bool(modifiers & Qt.ShiftModifier) and not bool(
+            modifiers & (Qt.AltModifier | Qt.ControlModifier | Qt.MetaModifier)
+        )
 
         if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            created = (
-                self.create_sibling_for_selected()
-                if ctrl_only
-                else self.create_child_for_selected()
-            )
+            if ctrl_only:
+                # STRG+Enter: bewusst unverändert lassen.
+                created = self.create_sibling_for_selected()
+            elif shift_only:
+                # Shift+Enter nutzt denselben Erzeugungspfad.
+                # Ob lokal ohne Reflow gearbeitet wird, entscheidet jetzt
+                # ausschließlich der Knotentyp des Elternknotens.
+                created = self.create_child_for_selected(
+                    preserve_underline_layout=True,
+                )
+            else:
+                # Einfaches Enter: identische Grundregel für Unterstrichen.
+                created = self.create_child_for_selected()
+
             if created is not None:
                 event.accept()
                 return
@@ -2623,6 +3628,14 @@ class MapScene(QGraphicsScene):
         super().contextMenuEvent(event)
 
     def find_reparent_target(self, dragged: NodeItem) -> NodeItem | None:
+        # Unterstrichene Knoten sind kompakte Listeneinträge. Beim manuellen
+        # Zusammenschieben darf Nähe zu einem anderen Knoten weder als
+        # Kollision noch als Wunsch zum Umhängen der Hierarchie interpretiert
+        # werden. Deshalb gibt es für diesen Typ kein automatisches
+        # Reparent-Ziel und damit auch keinen blauen Vorschau-Pfeil.
+        if not self._collision_enabled_for_node(dragged.object_id):
+            return None
+
         dragged_center = dragged.sceneBoundingRect().center()
         best_item: NodeItem | None = None
         best_distance = float("inf")
@@ -2648,16 +3661,24 @@ class MapScene(QGraphicsScene):
         return best_item
 
     def begin_group_drag(self, dragged: NodeItem) -> None:
-        """Merkt eine Mehrfachauswahl als starren Verschiebeblock."""
+        """Merkt eine Mehrfachauswahl als starren Verschiebeblock.
+
+        Wird ein bereits markierter Knoten angefasst, bewegen sich alle
+        markierten Knoten mit exakt demselben Delta. Beziehungen, Hierarchie
+        und relative Abstände innerhalb der Auswahl bleiben unverändert.
+        """
         selected = [
-            item for item in self.selectedItems() if isinstance(item, NodeItem)
+            item for item in self.selectedItems()
+            if isinstance(item, NodeItem)
         ]
+
         if dragged not in selected:
             selected = [dragged]
 
         self.group_drag_ids = {item.object_id for item in selected}
         self.group_drag_start_positions = {
-            item.object_id: QPointF(item.pos()) for item in selected
+            item.object_id: QPointF(item.pos())
+            for item in selected
         }
         self.group_drag_anchor_id = dragged.object_id
 
@@ -2699,7 +3720,10 @@ class MapScene(QGraphicsScene):
         selected_nodes = [
             item for item in self.selectedItems() if isinstance(item, NodeItem)
         ]
-        self.reparent_enabled = len(selected_nodes) == 1
+        self.reparent_enabled = (
+            len(selected_nodes) == 1
+            and self._collision_enabled_for_node(dragged.object_id)
+        )
 
     def _set_preview_target(self, target: NodeItem | None) -> None:
         if self.preview_target is target:
@@ -2810,6 +3834,16 @@ class MapScene(QGraphicsScene):
             float(state.get("height", 54.0)),
         )
 
+    def _collision_enabled_for_node(self, object_id: str) -> bool:
+        """Unterstrichene Knoten sind bewusst kollisionsfrei.
+
+        Sie dienen als kompakte Aufzählung und dürfen dicht untereinander
+        stehen. Weder lösen sie eine automatische Verdrängung aus noch
+        werden sie von einer anderen Karte automatisch weggeschoben.
+        """
+        state = self.model.active_map["object_states"].get(object_id, {})
+        return state.get("shape", "rounded") != "underline"
+
     def make_space_around_subtree(
         self,
         moved_root_id: str,
@@ -2843,11 +3877,15 @@ class MapScene(QGraphicsScene):
             }
 
             for active_id in active_ids:
+                if not self._collision_enabled_for_node(active_id):
+                    continue
                 active_rect = self._node_rect(active_id).adjusted(
                     -margin, -margin, margin, margin
                 )
                 for other_id in states:
                     if other_id in active_ids:
+                        continue
+                    if not self._collision_enabled_for_node(other_id):
                         continue
                     if active_rect.intersects(self._node_rect(other_id)):
                         collision = (active_id, other_id)
@@ -2897,6 +3935,231 @@ class MapScene(QGraphicsScene):
 
         return changed
 
+    # ------------------------------------------------------------------
+    # Lokale Kollisionslogik nach dem "Spielkarten"-Regelwerk
+    #
+    # Leitsatz:
+    #   Automatik hilft lokal, übernimmt aber nicht die Kontrolle.
+    #
+    # Regel 1:
+    #   Der vom Benutzer abgelegte Knoten bleibt exakt an seiner Position.
+    #
+    # Regel 2a:
+    #   Nur eine echte Überlappung löst die Automatik aus.
+    #
+    # Regel 2b:
+    #   Die kollidierte Karte wird auf dem Mittelpunktvektor vom aktiven
+    #   Knoten weg verschoben, bis zusätzlich ein kleiner Freiraum entsteht.
+    #
+    # Regel 3:
+    #   Die verschobene Karte wird erneut geprüft. Maximal fünf Karten
+    #   werden pro Benutzeraktion automatisch verschoben.
+    #
+    # Regel 4:
+    #   Kinder werden NICHT als Teilbaum mitgenommen. Sie bewegen sich nur,
+    #   wenn sie selbst durch die Kollisionskette betroffen sind.
+    # ------------------------------------------------------------------
+
+    COLLISION_CARD_GAP = 28.0
+    COLLISION_MAX_SHOVED_CARDS = 5
+
+    @staticmethod
+    def _rects_really_overlap(first: QRectF, second: QRectF) -> bool:
+        """Regel 2a: echte Flächenüberlappung, noch ohne Komfortabstand."""
+        return (
+            first.left() < second.right()
+            and first.right() > second.left()
+            and first.top() < second.bottom()
+            and first.bottom() > second.top()
+        )
+
+    def _nearest_colliding_card(
+        self,
+        source_id: str,
+        *,
+        fixed_id: str,
+        already_shoved: set[str],
+    ) -> str | None:
+        """Findet die nächstliegende tatsächlich kollidierende sichtbare Karte."""
+        if source_id not in self.node_items:
+            return None
+
+        # Typ "Unterstrichen" ist vollständig von der automatischen
+        # Kollisionsauflösung ausgenommen.
+        if not self._collision_enabled_for_node(source_id):
+            return None
+
+        source_rect = self._node_rect(source_id)
+        source_center = source_rect.center()
+        candidates: list[tuple[float, str]] = []
+
+        # node_items enthält nur die momentan sichtbaren Karten.
+        for other_id in self.node_items:
+            if other_id == source_id:
+                continue
+
+            # Unterstrichene Knoten sind auch als Kollisionsziel unsichtbar
+            # für die Automatik. Ein normaler Knoten schiebt sie also nicht weg.
+            if not self._collision_enabled_for_node(other_id):
+                continue
+
+            # Regel 1: Die vom Bediener abgelegte Karte ist für diesen
+            # kompletten Vorgang absolut und darf niemals weggeschoben werden.
+            if other_id == fixed_id:
+                continue
+
+            # Eine bereits automatisch geschobene Karte wird nicht ein zweites
+            # Mal bewegt. Das verhindert Ping-Pong und geometrische Zyklen.
+            if other_id in already_shoved:
+                continue
+
+            other_rect = self._node_rect(other_id)
+            if not self._rects_really_overlap(source_rect, other_rect):
+                continue
+
+            dx = other_rect.center().x() - source_center.x()
+            dy = other_rect.center().y() - source_center.y()
+            candidates.append((dx * dx + dy * dy, other_id))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda pair: pair[0])
+        return candidates[0][1]
+
+    def _shove_card_away(
+        self,
+        source_id: str,
+        target_id: str,
+        gap: float,
+    ) -> tuple[float, float]:
+        """
+        Regel 2b: Verschiebt nur target_id entlang des Mittelpunktvektors.
+
+        Die Strecke wird so gewählt, dass sich die Rechtecke nicht mehr
+        überlappen und zwischen ihnen zusätzlich ``gap`` Pixel frei bleiben.
+        """
+        source_rect = self._node_rect(source_id)
+        target_rect = self._node_rect(target_id)
+
+        sx = source_rect.center().x()
+        sy = source_rect.center().y()
+        tx = target_rect.center().x()
+        ty = target_rect.center().y()
+
+        vx = tx - sx
+        vy = ty - sy
+        length = math.hypot(vx, vy)
+
+        # Exakt gleiche Mittelpunkte besitzen keinen Richtungsvektor.
+        # Der Sonderfall bekommt eine reproduzierbare Richtung nach rechts.
+        if length < 1.0e-9:
+            ux, uy = 1.0, 0.0
+        else:
+            ux, uy = vx / length, vy / length
+
+        # Strecke bis zur ersten Trennung inklusive Komfortabstand.
+        # Es reicht, wenn die Rechtecke entlang EINER Achse getrennt sind.
+        distances: list[float] = []
+
+        if ux > 1.0e-9:
+            distances.append(
+                (source_rect.right() + gap - target_rect.left()) / ux
+            )
+        elif ux < -1.0e-9:
+            distances.append(
+                (target_rect.right() - (source_rect.left() - gap)) / (-ux)
+            )
+
+        if uy > 1.0e-9:
+            distances.append(
+                (source_rect.bottom() + gap - target_rect.top()) / uy
+            )
+        elif uy < -1.0e-9:
+            distances.append(
+                (target_rect.bottom() - (source_rect.top() - gap)) / (-uy)
+            )
+
+        positive = [distance for distance in distances if distance >= 0.0]
+        distance = min(positive) if positive else gap
+
+        # Kleine Reserve gegen Rundungsfehler / Touching-Grenzfälle.
+        distance += 0.5
+
+        dx = ux * distance
+        dy = uy * distance
+
+        state = self.model.active_map["object_states"][target_id]
+        new_x = float(state.get("x", 0.0)) + dx
+        new_y = float(state.get("y", 0.0)) + dy
+
+        # Regel 4: Nur diese EINE Karte bewegen, niemals ihren Teilbaum.
+        self.model.set_position(target_id, new_x, new_y)
+        self.model.set_layout_mode(target_id, "manual")
+
+        # Nur die Anschlussseite darf auf die neue räumliche Lage reagieren.
+        # Es wird dabei nichts weiter angeordnet.
+        self.model.refresh_branch_type_from_position(target_id)
+
+        return dx, dy
+
+    def _resolve_card_collisions(
+        self,
+        fixed_id: str,
+        gap: float | None = None,
+        max_shoved_cards: int | None = None,
+    ) -> list[str]:
+        """
+        Wendet Regeln 2a, 2b, 3 und 4 auf die abgelegte Karte an.
+
+        Rückgabe ist die Reihenfolge der automatisch verschobenen Karten.
+        """
+        gap = (
+            self.COLLISION_CARD_GAP
+            if gap is None
+            else max(0.0, float(gap))
+        )
+        limit = (
+            self.COLLISION_MAX_SHOVED_CARDS
+            if max_shoved_cards is None
+            else max(0, int(max_shoved_cards))
+        )
+
+        if fixed_id not in self.node_items or limit == 0:
+            return []
+
+        if not self._collision_enabled_for_node(fixed_id):
+            return []
+
+        shoved: list[str] = []
+        shoved_set: set[str] = set()
+
+        def resolve_from(source_id: str) -> None:
+            # Nach einer weitergereichten Kollision wird dieselbe Quellkarte
+            # nochmals geprüft, weil sie gleichzeitig mehrere Karten
+            # überdecken kann.
+            while len(shoved) < limit:
+                collision_id = self._nearest_colliding_card(
+                    source_id,
+                    fixed_id=fixed_id,
+                    already_shoved=shoved_set,
+                )
+                if collision_id is None:
+                    return
+
+                self._shove_card_away(source_id, collision_id, gap)
+                shoved.append(collision_id)
+                shoved_set.add(collision_id)
+
+                # Regel 3: Zuerst die gerade verschobene Karte prüfen.
+                resolve_from(collision_id)
+
+                if len(shoved) >= limit:
+                    return
+
+        resolve_from(fixed_id)
+        return shoved
+
     def finish_reparent_preview(
         self,
         dragged: NodeItem,
@@ -2927,28 +4190,56 @@ class MapScene(QGraphicsScene):
                 for object_id in protected_ids:
                     self.model.set_layout_mode(object_id, "manual")
 
-                # Nur Verbindungen aus der Auswahl nach außen dürfen ihre Seite
-                # an die neue Lage anpassen. Interne Verbindungen bleiben unangetastet.
+                # Verbindungen aus der Auswahl nach außen an die neue Lage anpassen.
+                touched_parents: set[str] = set()
                 for object_id in protected_ids:
                     parent_id = self.model.tree_parent(object_id)
                     if parent_id not in protected_ids:
                         self.model.refresh_branch_type_from_position(object_id)
+                    if parent_id is not None:
+                        touched_parents.add(parent_id)
+
+                # Nur Linien kämmen; Karten bleiben unverändert.
+                for object_id in protected_ids:
+                    self.comb_branches_for_node(object_id)
+                for parent_id in touched_parents:
+                    self.comb_branches_for_node(parent_id)
             else:
-                protected_ids = self._shift_descendants_after_drag(dragged)
+                # Regel 1: Der Benutzer hat die Position bestimmt. Der gezogene
+                # Knoten bleibt exakt dort; Kinder werden nicht mitgenommen.
                 self.model.set_layout_mode(dragged.object_id, "manual")
 
-                # Beim Überschreiten einer Knotenseite wechselt nur diese einzelne
-                # Eltern-Kind-Verbindung automatisch ihre Anschlussseite.
-                # Andere Kinder desselben Elternknotens behalten ihre Seiten.
-                self.model.refresh_branch_type_from_position(dragged.object_id)
+                if not self._collision_enabled_for_node(dragged.object_id):
+                    # Unterstrichen = freier kompakter Listeneintrag:
+                    # Position übernehmen, aber KEIN Reparenting, KEINE
+                    # Kollisionsauflösung, KEINE Seiten-Neubestimmung und
+                    # KEIN automatisches Kämmen/Neuordnen.
+                    shoved_cards = []
+                else:
+                    # Zuerst die eigene Elternverbindung an die neue Lage anpassen.
+                    self.model.refresh_branch_type_from_position(dragged.object_id)
 
-                # Der vom Benutzer verschobene Teilbaum bleibt exakt an seiner
-                # neuen Position. Nur fremde, tatsächlich kollidierende Teilbäume
-                # dürfen ausweichen.
-                collision_changed = self.make_space_around_subtree(
-                    dragged.object_id,
-                    protected_ids,
-                )
+                    # Regeln 2a, 2b, 3, 4:
+                    # Nur bei echter Kollision lokal weiterreichen, maximal 5 Karten.
+                    shoved_cards = self._resolve_card_collisions(
+                        dragged.object_id,
+                    )
+                    collision_changed = bool(shoved_cards)
+
+                    # Danach Äste sortieren und harmonisch verteilen.
+                    # Alte manuelle Linienführungen dürfen verworfen werden.
+                    self.comb_branches_for_node(dragged.object_id)
+                    parent_id = self.model.tree_parent(dragged.object_id)
+                    if parent_id is not None:
+                        self.comb_branches_for_node(parent_id)
+
+                    # Auch automatisch weggeschobene Karten können Eltern sein.
+                    # Nur deren Linien werden neu gekämmt.
+                    for shoved_id in shoved_cards:
+                        self.comb_branches_for_node(shoved_id)
+                        shoved_parent = self.model.tree_parent(shoved_id)
+                        if shoved_parent is not None:
+                            self.comb_branches_for_node(shoved_parent)
 
         if changed or moved or collision_changed:
             self.commit_snapshot(pre_drag_snapshot)

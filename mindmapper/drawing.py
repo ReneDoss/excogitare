@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from .model import ProjectModel, new_id
+from .richtext_support import clipboard_image_html
 
 
 SELECTION_COLOR = QColor("#2563eb")
@@ -592,15 +593,20 @@ class DrawingTextItem(QGraphicsTextItem):
         self._toggle_list(QTextListFormat.ListDecimal)
 
     def paste_from_clipboard(self) -> bool:
+        """Paste text, HTML or screenshots exactly like node rich text."""
         mime = QApplication.clipboard().mimeData()
         cursor = self.textCursor()
-        # Freier Text bleibt Text/Rich-Text; Bilder werden hier bewusst nicht eingebettet.
-        if mime.hasHtml() and not mime.hasImage():
+
+        image_html = clipboard_image_html()
+        if image_html is not None:
+            cursor.insertHtml(image_html)
+        elif mime.hasHtml():
             cursor.insertHtml(mime.html())
         elif mime.hasText():
             cursor.insertText(mime.text())
         else:
             return False
+
         self.setTextCursor(cursor)
         return True
 

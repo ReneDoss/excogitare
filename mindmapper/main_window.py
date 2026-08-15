@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QFileInfo, QSettings, QSize, QTimer, Qt, QUrl
+from PySide6.QtCore import QFileInfo, QSettings, QSize, QSizeF, QRectF, QMarginsF, QTimer, Qt, QUrl
 import shiboken6
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QDesktopServices, QIcon, QPainter, QPen, QPixmap, QTextCursor
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QDesktopServices, QIcon, QPainter, QPen, QPixmap, QTextCursor, QImage, QPdfWriter, QPageSize, QPageLayout, QTextCharFormat, QTextListFormat
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QTabBar,
     QPlainTextEdit,
+    QTextEdit,
     QListWidget,
     QListWidgetItem,
     QFileIconProvider,
@@ -46,6 +49,7 @@ from .model import ProjectModel
 from .storage import load_project, save_project
 from .view import MapView, MiniMapView
 from .drawing import DrawingDock
+from .richtext_support import clipboard_image_html
 
 def _make_format_painter_icon(size: int = 18) -> QIcon:
     """Kleiner neutraler Formatpinsel ohne Abhängigkeit von Emoji-Fonts."""
@@ -72,6 +76,125 @@ def _make_format_painter_icon(size: int = 18) -> QIcon:
     painter.drawLine(3, 15, 6, 15)
     painter.end()
     return QIcon(pixmap)
+
+
+class RichNoteEdit(QTextEdit):
+    """Dock-based rich-text editor with the same formatting commands as map text."""
+
+    def toggle_bold(self) -> None:
+        cursor = self.textCursor()
+        fmt = QTextCharFormat()
+        fmt.setFontWeight(
+            QFont.Weight.Normal
+            if int(cursor.charFormat().fontWeight()) >= int(QFont.Weight.Bold)
+            else QFont.Weight.Bold
+        )
+        cursor.mergeCharFormat(fmt)
+        self.setTextCursor(cursor)
+
+    def toggle_italic(self) -> None:
+        cursor = self.textCursor()
+        fmt = QTextCharFormat()
+        fmt.setFontItalic(not cursor.charFormat().fontItalic())
+        cursor.mergeCharFormat(fmt)
+        self.setTextCursor(cursor)
+
+    def toggle_underline(self) -> None:
+        cursor = self.textCursor()
+        fmt = QTextCharFormat()
+        fmt.setFontUnderline(not cursor.charFormat().fontUnderline())
+        cursor.mergeCharFormat(fmt)
+        self.setTextCursor(cursor)
+
+    def set_font_point_size(self, size: float) -> None:
+        if size <= 0:
+            return
+        cursor = self.textCursor()
+        fmt = QTextCharFormat()
+        fmt.setFontPointSize(float(size))
+        cursor.mergeCharFormat(fmt)
+        self.setTextCursor(cursor)
+
+    def set_text_color(self, color: QColor) -> None:
+        if not color.isValid():
+            return
+        cursor = self.textCursor()
+        fmt = QTextCharFormat()
+        fmt.setForeground(color)
+        cursor.mergeCharFormat(fmt)
+        self.setTextCursor(cursor)
+
+    def insert_link(self, url: str) -> None:
+        url = url.strip()
+        if not url:
+            return
+        if "://" not in url and not url.lower().startswith(("mailto:", "file:")):
+            url = "https://" + url
+        cursor = self.textCursor()
+        fmt = QTextCharFormat()
+        fmt.setAnchor(True)
+        fmt.setAnchorHref(url)
+        fmt.setFontUnderline(True)
+        fmt.setForeground(QColor("#1a5fb4"))
+        if cursor.hasSelection():
+            cursor.mergeCharFormat(fmt)
+        else:
+            cursor.insertText(url, fmt)
+        self.setTextCursor(cursor)
+
+    def _toggle_list(self, style: QTextListFormat.Style) -> None:
+        cursor = self.textCursor()
+        current = cursor.currentList()
+        if current is not None and current.format().style() == style:
+            block_fmt = cursor.blockFormat()
+            block_fmt.setIndent(0)
+            cursor.setBlockFormat(block_fmt)
+            current.remove(cursor.block())
+            return
+        fmt = QTextListFormat()
+        fmt.setStyle(style)
+        fmt.setIndent(1)
+        cursor.createList(fmt)
+
+    def toggle_bullet_list(self) -> None:
+        self._toggle_list(QTextListFormat.ListDisc)
+
+    def toggle_numbered_list(self) -> None:
+        self._toggle_list(QTextListFormat.ListDecimal)
+
+    def paste_from_clipboard(self) -> bool:
+        """Paste via toolbar/menu using the common rich-text clipboard path."""
+        mime = QApplication.clipboard().mimeData()
+        cursor = self.textCursor()
+        image_html = clipboard_image_html()
+        if image_html is not None:
+            cursor.insertHtml(image_html)
+        elif mime.hasHtml():
+            cursor.insertHtml(mime.html())
+        elif mime.hasText():
+            cursor.insertText(mime.text())
+        else:
+            return False
+        self.setTextCursor(cursor)
+        return True
+
+    def insertFromMimeData(self, source) -> None:
+        """Handle normal Ctrl+V directly inside the note editor.
+
+        QTextEdit's default paste path does not reliably embed clipboard images
+        as self-contained HTML. Node and drawing text use Excogitare's own image
+        conversion already; notes must do the same when Ctrl+V is pressed.
+        """
+        if source is not None and source.hasImage():
+            image_html = clipboard_image_html()
+            if image_html is not None:
+                cursor = self.textCursor()
+                cursor.insertHtml(image_html)
+                self.setTextCursor(cursor)
+                return
+
+        # HTML and plain text continue through Qt's normal rich-text handling.
+        super().insertFromMimeData(source)
 
 
 @dataclass
@@ -129,6 +252,8 @@ class MainWindow(QMainWindow):
     def _create_map_tabs(self) -> None:
         """Erzeugt die Reiterleiste für mehrere Maps eines Projekts."""
         central = QWidget()
+        central.setObjectName("map_central_widget")
+        central.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -153,8 +278,13 @@ class MainWindow(QMainWindow):
             "QTabBar#map_tabs::tab:selected { background: white; }"
             "QTabBar#map_tabs::tab:hover { background: #f7f8fa; }"
         )
+        self.map_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.view.setMinimumSize(0, 0)
         layout.addWidget(self.map_tabs)
         layout.addWidget(self.view, 1)
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
         self.setCentralWidget(central)
         self._refresh_map_tabs()
 
@@ -483,8 +613,9 @@ class MainWindow(QMainWindow):
         note_header.addWidget(QLabel("Notiz"))
         note_header.addStretch(1)
         layout.addLayout(note_header)
-        self.note_edit = QPlainTextEdit()
-        self.note_edit.setPlaceholderText("Notizen zum ausgewaehlten Knoten ...")
+        self.note_edit = RichNoteEdit()
+        self.note_edit.setAcceptRichText(True)
+        self.note_edit.setPlaceholderText("Rich-Text-Notiz zum ausgewählten Knoten …")
         self.note_edit.setMinimumHeight(120)
         self.note_edit.textChanged.connect(self._note_changed)
         layout.addWidget(self.note_edit, 1)
@@ -598,10 +729,34 @@ class MainWindow(QMainWindow):
         object_id = self._details_selected_id()
         if object_id is None:
             return
-        note = self.note_edit.toPlainText()
-        if self.model.note(object_id) == note:
+
+        plain = self.note_edit.toPlainText()
+        html = self.note_edit.toHtml()
+
+        if self.model.note(object_id) == plain and self.model.note_html(object_id) == html:
             return
-        self.model.set_note(object_id, note)
+
+        self.model.set_note_rich(object_id, html, plain)
+
+        # Keep the periodic details refresh from resetting the live cursor.
+        attachments = self.model.attachments(object_id)
+        obj = self.model.data["objects"].get(object_id, {})
+        self._details_signature = (
+            object_id,
+            str(obj.get("title", "")),
+            self.model.note_html(object_id),
+            plain,
+            tuple(
+                (
+                    str(a.get("id", "")),
+                    str(a.get("label", "")),
+                    str(a.get("target", "")),
+                )
+                for a in attachments
+            ),
+        )
+        self._details_object_id = object_id
+
         item = self.scene.node_items.get(object_id)
         if item is not None:
             item.refresh_details_indicator()
@@ -629,8 +784,20 @@ class MainWindow(QMainWindow):
         else:
             obj = self.model.data["objects"].get(object_id, {})
             attachments = self.model.attachments(object_id)
-            signature = (object_id, str(obj.get("title", "")), str(obj.get("note", "")),
-                         tuple((str(a.get("id", "")), str(a.get("label", "")), str(a.get("target", ""))) for a in attachments))
+            signature = (
+                object_id,
+                str(obj.get("title", "")),
+                self.model.note_html(object_id),
+                self.model.note(object_id),
+                tuple(
+                    (
+                        str(a.get("id", "")),
+                        str(a.get("label", "")),
+                        str(a.get("target", "")),
+                    )
+                    for a in attachments
+                ),
+            )
         if not force and signature == self._details_signature:
             return
         self._details_signature = signature
@@ -644,7 +811,7 @@ class MainWindow(QMainWindow):
             self.attachment_list.clear()
             if object_id is None:
                 self.details_title.setText("Kein Knoten ausgewaehlt")
-                self.note_edit.setPlainText("")
+                self.note_edit.clear()
                 self.attachment_count_label.setText("0")
                 self.attachment_list.clear()
                 self.attachment_list.setVisible(False)
@@ -653,7 +820,12 @@ class MainWindow(QMainWindow):
                 return
             obj = self.model.data["objects"][object_id]
             self.details_title.setText(str(obj.get("title", "Knoten")))
-            self.note_edit.setPlainText(self.model.note(object_id))
+            note_html = self.model.note_html(object_id)
+            if note_html:
+                self.note_edit.setHtml(note_html)
+            else:
+                # Backward compatibility: old .mmproj notes were plain text.
+                self.note_edit.setPlainText(self.model.note(object_id))
             attachments = list(self.model.attachments(object_id))
             count = len(attachments)
             self.attachment_count_label.setText(str(count))
@@ -1084,6 +1256,235 @@ class MainWindow(QMainWindow):
         self.scene.rebuild()
         self._update_properties()
 
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    _EXPORT_HELPER_CLASS_NAMES = {
+        "BranchExitHandle",
+        "NodeResizeHandle",
+        "ImageResizeHandle",
+        "RelationGuideHandle",
+    }
+
+    def _export_file_stem(self) -> str:
+        if self.current_path is not None:
+            return self.current_path.stem
+        title = str(self.model.data.get("project", {}).get("title", "")).strip()
+        return title or "Excogitare_Map"
+
+    def _prepare_scene_export(self):
+        """Blendet ausschließlich Bedienhilfen für den Export aus.
+
+        Die Map selbst, Rich-Text, Bilder, Zeichenflächen und eingeklappte
+        Zustände bleiben exakt so erhalten wie in der aktuellen Ansicht.
+        """
+        selected_items = list(self.scene.selectedItems())
+        helper_states: list[tuple[object, bool]] = []
+
+        # Auswahlrahmen/Resize-Griffe verschwinden.
+        self.scene.clearSelection()
+
+        for item in self.scene.items():
+            class_name = item.__class__.__name__
+            if class_name in self._EXPORT_HELPER_CLASS_NAMES:
+                helper_states.append((item, item.isVisible()))
+                item.setVisible(False)
+
+        return selected_items, helper_states
+
+    def _restore_scene_export(self, state) -> None:
+        selected_items, helper_states = state
+
+        for item, was_visible in helper_states:
+            try:
+                item.setVisible(was_visible)
+            except (RuntimeError, ReferenceError):
+                pass
+
+        for item in selected_items:
+            try:
+                item.setSelected(True)
+            except (RuntimeError, ReferenceError):
+                pass
+
+    def _export_scene_bounds(self, padding: float = 28.0) -> QRectF:
+        """Bounds aller sichtbaren Map-Inhalte ohne unsichtbare Bedienhilfen."""
+        bounds: QRectF | None = None
+
+        for item in self.scene.items():
+            if not item.isVisible():
+                continue
+            if item.__class__.__name__ in self._EXPORT_HELPER_CLASS_NAMES:
+                continue
+
+            try:
+                rect = item.sceneBoundingRect()
+            except (RuntimeError, ReferenceError):
+                continue
+
+            if rect.isNull() or rect.isEmpty():
+                continue
+
+            # Vorschaupfad und leere Hilfsobjekte nicht in den Exportbereich ziehen.
+            if item is getattr(self.scene, "preview_path", None):
+                continue
+
+            bounds = QRectF(rect) if bounds is None else bounds.united(rect)
+
+        if bounds is None:
+            return QRectF(-100.0, -100.0, 200.0, 200.0)
+
+        return bounds.adjusted(-padding, -padding, padding, padding)
+
+    def export_pdf(self) -> None:
+        """Exportiert die komplette sichtbare Map als eine große PDF-Seite."""
+        default_name = f"{self._export_file_stem()}.pdf"
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Map als PDF exportieren",
+            default_name,
+            "PDF-Dateien (*.pdf)",
+        )
+        if not filename:
+            return
+        if not filename.lower().endswith(".pdf"):
+            filename += ".pdf"
+
+        export_state = self._prepare_scene_export()
+        try:
+            source = self._export_scene_bounds()
+            if source.width() <= 0.0 or source.height() <= 0.0:
+                raise RuntimeError("Die Map besitzt keinen exportierbaren Inhalt.")
+
+            # Szene wird als Vektorgrafik auf EINE an die Map angepasste Seite
+            # gerendert. 96 Szeneneinheiten werden als ca. 25,4 mm interpretiert.
+            mm_per_scene_unit = 25.4 / 96.0
+            page_w_mm = max(20.0, source.width() * mm_per_scene_unit)
+            page_h_mm = max(20.0, source.height() * mm_per_scene_unit)
+
+            writer = QPdfWriter(filename)
+            writer.setTitle(self._export_file_stem())
+            writer.setCreator(f"{APP_NAME} {APP_VERSION}")
+            writer.setResolution(300)
+
+            page_size = QPageSize(
+                QSizeF(page_w_mm, page_h_mm),
+                QPageSize.Millimeter,
+                "Excogitare Map",
+                QPageSize.ExactMatch,
+            )
+            writer.setPageSize(page_size)
+            writer.setPageMargins(
+                QMarginsF(0.0, 0.0, 0.0, 0.0),
+                QPageLayout.Millimeter,
+            )
+
+            painter = QPainter(writer)
+            if not painter.isActive():
+                raise RuntimeError("PDF-Zeichner konnte nicht gestartet werden.")
+
+            target = QRectF(
+                0.0,
+                0.0,
+                float(writer.width()),
+                float(writer.height()),
+            )
+            self.scene.render(
+                painter,
+                target,
+                source,
+                Qt.KeepAspectRatio,
+            )
+            painter.end()
+
+            self.statusBar().showMessage(
+                f"PDF exportiert: {filename}",
+                5000,
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "PDF-Export",
+                f"PDF konnte nicht exportiert werden:\\n\\n{exc}",
+            )
+        finally:
+            self._restore_scene_export(export_state)
+
+    def export_jpg(self) -> None:
+        """Exportiert die komplette sichtbare Map als hochauflösendes JPG."""
+        default_name = f"{self._export_file_stem()}.jpg"
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Map als JPG exportieren",
+            default_name,
+            "JPEG-Bilder (*.jpg *.jpeg)",
+        )
+        if not filename:
+            return
+        if not filename.lower().endswith((".jpg", ".jpeg")):
+            filename += ".jpg"
+
+        export_state = self._prepare_scene_export()
+        try:
+            source = self._export_scene_bounds()
+            if source.width() <= 0.0 or source.height() <= 0.0:
+                raise RuntimeError("Die Map besitzt keinen exportierbaren Inhalt.")
+
+            # Hohe Auflösung, aber mit Sicherheitsgrenze gegen riesige Images.
+            scale = 2.0
+            max_dimension = 16000.0
+            longest = max(source.width(), source.height())
+            if longest * scale > max_dimension:
+                scale = max_dimension / longest
+
+            pixel_w = max(1, int(round(source.width() * scale)))
+            pixel_h = max(1, int(round(source.height() * scale)))
+
+            # Zusätzlich eine vernünftige Gesamtpixelgrenze (~120 MP) setzen.
+            max_pixels = 120_000_000
+            pixel_count = pixel_w * pixel_h
+            if pixel_count > max_pixels:
+                reduction = math.sqrt(max_pixels / float(pixel_count))
+                pixel_w = max(1, int(pixel_w * reduction))
+                pixel_h = max(1, int(pixel_h * reduction))
+
+            image = QImage(
+                pixel_w,
+                pixel_h,
+                QImage.Format_RGB32,
+            )
+            image.fill(QColor("#ffffff"))
+
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setRenderHint(QPainter.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+            self.scene.render(
+                painter,
+                QRectF(0.0, 0.0, float(pixel_w), float(pixel_h)),
+                source,
+                Qt.KeepAspectRatio,
+            )
+            painter.end()
+
+            if not image.save(filename, "JPG", 94):
+                raise RuntimeError("Qt konnte die JPG-Datei nicht schreiben.")
+
+            self.statusBar().showMessage(
+                f"JPG exportiert: {filename} ({pixel_w} × {pixel_h} px)",
+                5000,
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "JPG-Export",
+                f"JPG konnte nicht exportiert werden:\\n\\n{exc}",
+            )
+        finally:
+            self._restore_scene_export(export_state)
+
     def _create_actions(self) -> None:
         self.new_action = QAction("Neu", self)
         self.new_action.setShortcut(QKeySequence.New)
@@ -1120,6 +1521,14 @@ class MainWindow(QMainWindow):
         self.save_as_action = QAction("Speichern unter", self)
         self.save_as_action.setShortcut(QKeySequence.SaveAs)
         self.save_as_action.triggered.connect(self.save_project_as)
+
+        self.export_pdf_action = QAction("PDF …", self)
+        self.export_pdf_action.setToolTip("Gesamte sichtbare Map als PDF exportieren")
+        self.export_pdf_action.triggered.connect(self.export_pdf)
+
+        self.export_jpg_action = QAction("JPG …", self)
+        self.export_jpg_action.setToolTip("Gesamte sichtbare Map als JPG exportieren")
+        self.export_jpg_action.triggered.connect(self.export_jpg)
 
         self.undo_action = QAction("Rückgängig", self)
         self.undo_action.setShortcut(QKeySequence.Undo)
@@ -1178,6 +1587,11 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
+        file_menu.addSeparator()
+
+        export_menu = file_menu.addMenu("Exportieren")
+        export_menu.addAction(self.export_pdf_action)
+        export_menu.addAction(self.export_jpg_action)
 
         edit_menu = self.menuBar().addMenu("&Bearbeiten")
         edit_menu.addAction(self.undo_action)
@@ -1360,6 +1774,31 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.TopToolBarArea, self.format_toolbar)
         self._update_format_controls()
 
+    def resizeEvent(self, event) -> None:
+        """Synchronisiert den zentralen Map-Viewport mit der Fenstergröße."""
+        super().resizeEvent(event)
+        self._sync_central_view_geometry()
+
+    def showEvent(self, event) -> None:
+        """Korrigiert auch Geometrie nach restoreGeometry/restoreState."""
+        super().showEvent(event)
+        QTimer.singleShot(0, self._sync_central_view_geometry)
+
+    def _sync_central_view_geometry(self) -> None:
+        # Nur Widget-Geometrie aktualisieren. Zoom, Scrollposition,
+        # Szene und Knotenkoordinaten bleiben unverändert.
+        central = self.centralWidget()
+        if central is None:
+            return
+        central.updateGeometry()
+        layout = central.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        if hasattr(self, "view"):
+            self.view.updateGeometry()
+            self.view.viewport().update()
+
     def _restore_window_layout(self) -> None:
         """Stellt Dockpositionen und Fenstergeometrie der letzten Sitzung wieder her."""
         geometry = self.settings.value("main_window/geometry")
@@ -1385,6 +1824,10 @@ class MainWindow(QMainWindow):
         )
 
     def _active_text_editor(self):
+        # Notes use the same global formatting toolbar as node/drawing text.
+        if hasattr(self, "note_edit") and self.note_edit.hasFocus():
+            return self.note_edit
+
         editor = self.scene.editing_item
         if editor is None:
             return None
@@ -1417,6 +1860,13 @@ class MainWindow(QMainWindow):
         self.scene.copy_selected_to_clipboard()
 
     def _paste_from_clipboard(self) -> None:
+        editor = self._active_text_editor()
+        if editor is not None and hasattr(editor, "paste_from_clipboard"):
+            if editor.paste_from_clipboard():
+                editor.setFocus(Qt.OtherFocusReason)
+                self._update_format_controls()
+                return
+
         if self.scene.paste_from_clipboard():
             editor = self._active_text_editor()
             if editor is not None:
@@ -1461,57 +1911,121 @@ class MainWindow(QMainWindow):
         return logical[0]
 
     def _capture_format_payload(self):
+        """Nimmt das Format des exakt einen ausgewählten Quellobjekts auf.
+
+        Inhalt und Geometrie werden bewusst NICHT übernommen:
+        kein Text, keine Bilder, keine Größe und keine Position.
+        """
         source = self._selected_format_source()
         if source is None:
             return None
 
         (kind, source_id), item = source
+
         if kind == "node":
             state = self.model.active_map["object_states"].get(source_id, {})
             keys = (
-                "shape", "fill_color", "border_color", "text_color",
-                "border_width", "corner_radius",
+                "shape",
+                "fill_color",
+                "border_color",
+                "text_color",
+                "border_width",
+                "corner_radius",
             )
+
+            # Zusätzlich das sichtbare Zeichenformat des Knotentextes erfassen.
+            text_format = {}
+            label = getattr(item, "label", None)
+            if label is not None:
+                try:
+                    document = label.document()
+                    cursor = QTextCursor(document)
+                    if document.characterCount() > 1:
+                        cursor.setPosition(0)
+                        cursor.movePosition(
+                            QTextCursor.NextCharacter,
+                            QTextCursor.KeepAnchor,
+                        )
+                    fmt = cursor.charFormat()
+                    text_format = {
+                        "font_family": fmt.fontFamily(),
+                        "font_size": float(fmt.fontPointSize()),
+                        "font_weight": int(fmt.fontWeight()),
+                        "italic": bool(fmt.fontItalic()),
+                        "underline": bool(fmt.fontUnderline()),
+                        "text_color": fmt.foreground().color().name(),
+                    }
+                except (RuntimeError, ReferenceError):
+                    text_format = {}
+
             return {
                 "kind": "node",
-                "format": {key: state.get(key) for key in keys if key in state},
+                "format": {
+                    key: state.get(key)
+                    for key in keys
+                    if key in state
+                },
+                "text_format": text_format,
             }
 
         if kind == "drawing":
             data = self.scene.drawing_controller.data(source_id)
             dtype = str(data.get("type", ""))
+
             if dtype == "rectangle":
-                keys = ("fill_color", "border_color", "border_width", "opacity")
+                keys = (
+                    "fill_color",
+                    "border_color",
+                    "border_width",
+                    "opacity",
+                )
                 return {
                     "kind": "rectangle",
-                    "format": {key: data.get(key) for key in keys if key in data},
+                    "format": {
+                        key: data.get(key)
+                        for key in keys
+                        if key in data
+                    },
                 }
+
             if dtype in {"line", "arrow"}:
                 keys = ("color", "width")
                 return {
                     "kind": "segment",
-                    "format": {key: data.get(key) for key in keys if key in data},
+                    "format": {
+                        key: data.get(key)
+                        for key in keys
+                        if key in data
+                    },
                 }
+
             if dtype == "text":
-                # Textformat als Rich-Text-Zeichenformat des ersten Zeichens.
                 try:
                     cursor = item.textCursor()
                     cursor.setPosition(0)
-                    cursor.movePosition(cursor.Right, cursor.KeepAnchor, 1)
+                    cursor.movePosition(
+                        QTextCursor.NextCharacter,
+                        QTextCursor.KeepAnchor,
+                    )
                     fmt = cursor.charFormat()
                     return {
                         "kind": "text",
                         "format": {
                             "font_family": fmt.fontFamily(),
-                            "font_size": fmt.fontPointSize(),
+                            "font_size": float(fmt.fontPointSize()),
                             "font_weight": int(fmt.fontWeight()),
                             "italic": bool(fmt.fontItalic()),
                             "underline": bool(fmt.fontUnderline()),
                             "color": fmt.foreground().color().name(),
                         },
                     }
-                except Exception:
-                    return {"kind": "text", "format": {"color": data.get("color", "#333333")}}
+                except (RuntimeError, ReferenceError):
+                    return {
+                        "kind": "text",
+                        "format": {
+                            "color": data.get("color", "#333333")
+                        },
+                    }
 
         return None
 
@@ -1523,14 +2037,22 @@ class MainWindow(QMainWindow):
                 3500,
             )
             if hasattr(self, "format_painter_button"):
+                self.format_painter_button.blockSignals(True)
                 self.format_painter_button.setChecked(False)
+                self.format_painter_button.blockSignals(False)
             return
+
         self._format_painter_payload = payload
         if hasattr(self, "format_painter_button"):
+            self.format_painter_button.blockSignals(True)
             self.format_painter_button.setChecked(True)
+            self.format_painter_button.blockSignals(False)
+
+        # Anders als bisher bleibt der Pinsel aktiv. So können mehrere Knoten
+        # nacheinander formatiert werden. Esc oder erneuter Klick beendet ihn.
         self.statusBar().showMessage(
-            "Formatpinsel aktiv – Zielobjekt anklicken. Esc bricht ab.",
-            5000,
+            "Formatpinsel aktiv – Ziel(e) anklicken. Esc oder Pinsel beendet.",
+            0,
         )
 
     def _toggle_format_painter(self, checked: bool) -> None:
@@ -1545,6 +2067,7 @@ class MainWindow(QMainWindow):
             self.format_painter_button.blockSignals(True)
             self.format_painter_button.setChecked(False)
             self.format_painter_button.blockSignals(False)
+        self.statusBar().clearMessage()
 
     @staticmethod
     def _logical_item(item):
@@ -1561,23 +2084,118 @@ class MainWindow(QMainWindow):
             current = current.parentItem()
         return None
 
+    @staticmethod
+    def _merge_character_format(text_item, values: dict) -> bool:
+        """Formatiert den kompletten vorhandenen Text, ohne Inhalt zu ersetzen."""
+        try:
+            document = text_item.document()
+            cursor = QTextCursor(document)
+            cursor.select(QTextCursor.Document)
+
+            fmt = QTextCharFormat()
+            family = str(values.get("font_family", "") or "")
+            if family:
+                fmt.setFontFamily(family)
+
+            size = float(values.get("font_size", 0.0) or 0.0)
+            if size > 0.0:
+                fmt.setFontPointSize(size)
+
+            if "font_weight" in values:
+                fmt.setFontWeight(int(values["font_weight"]))
+            if "italic" in values:
+                fmt.setFontItalic(bool(values["italic"]))
+            if "underline" in values:
+                fmt.setFontUnderline(bool(values["underline"]))
+
+            color = values.get("text_color", values.get("color"))
+            if color:
+                fmt.setForeground(QColor(str(color)))
+
+            cursor.mergeCharFormat(fmt)
+            return True
+        except (RuntimeError, ReferenceError, TypeError, ValueError):
+            return False
+
     def _apply_format_painter_to_item(self, clicked_item) -> bool:
+        """Wendet ausschließlich Format an; Inhalt und Position bleiben erhalten."""
         payload = self._format_painter_payload
         if payload is None:
             return False
 
         logical = self._logical_item(clicked_item)
         if logical is None:
+            # Klick ins Leere soll den aktiven Pinsel nicht versehentlich beenden.
             return False
 
         kind, target_id, item = logical
         applied = False
+
+        # Erst prüfen, ob Quelle und Ziel kompatibel sind. Dadurch entsteht bei
+        # einem Fehlklick kein nutzloser Undo-Eintrag.
+        compatible = (
+            (payload["kind"] == "node" and kind == "node")
+            or (
+                kind == "drawing"
+                and (
+                    (
+                        payload["kind"] == "rectangle"
+                        and str(
+                            self.scene.drawing_controller.data(target_id).get(
+                                "type", ""
+                            )
+                        ) == "rectangle"
+                    )
+                    or (
+                        payload["kind"] == "segment"
+                        and str(
+                            self.scene.drawing_controller.data(target_id).get(
+                                "type", ""
+                            )
+                        ) in {"line", "arrow"}
+                    )
+                    or (
+                        payload["kind"] == "text"
+                        and str(
+                            self.scene.drawing_controller.data(target_id).get(
+                                "type", ""
+                            )
+                        ) == "text"
+                    )
+                )
+            )
+        )
+
+        if not compatible:
+            self.statusBar().showMessage(
+                "Formatpinsel aktiv – dieses Ziel passt nicht zur Quelle.",
+                2500,
+            )
+            return True
+
         self.scene.push_undo()
 
         if payload["kind"] == "node" and kind == "node":
             state = self.model.active_map["object_states"].get(target_id)
-            if state is not None:
+            target_node = self.scene.node_items.get(target_id)
+
+            if state is not None and target_node is not None:
+                # Nur Darstellung übernehmen. Größe, Position, Layout,
+                # Ein-/Ausklappzustand und Inhalt bleiben beim Ziel.
                 state.update(payload["format"])
+
+                text_values = payload.get("text_format", {})
+                if text_values:
+                    self._merge_character_format(
+                        target_node.label,
+                        text_values,
+                    )
+                    self.model.set_rich_text(
+                        target_id,
+                        target_node.label.toHtml(),
+                        target_node.label.toPlainText(),
+                    )
+
                 self.model.touch()
                 applied = True
 
@@ -1596,44 +2214,26 @@ class MainWindow(QMainWindow):
                 applied = True
 
             elif payload["kind"] == "text" and dtype == "text":
-                try:
-                    cursor = item.textCursor()
-                    cursor.select(cursor.Document)
-                    from PySide6.QtGui import QTextCharFormat
-                    fmt = QTextCharFormat()
-                    f = payload["format"]
-                    if f.get("font_family"):
-                        fmt.setFontFamily(str(f["font_family"]))
-                    if float(f.get("font_size", 0) or 0) > 0:
-                        fmt.setFontPointSize(float(f["font_size"]))
-                    if "font_weight" in f:
-                        fmt.setFontWeight(int(f["font_weight"]))
-                    fmt.setFontItalic(bool(f.get("italic", False)))
-                    fmt.setFontUnderline(bool(f.get("underline", False)))
-                    if f.get("color"):
-                        fmt.setForeground(QColor(str(f["color"])))
-                    cursor.mergeCharFormat(fmt)
-                    item.setTextCursor(cursor)
+                if self._merge_character_format(item, payload["format"]):
                     data["html"] = item.toHtml()
                     data["text"] = item.toPlainText()
                     self.model.touch()
                     applied = True
-                except Exception:
-                    pass
 
         if applied:
+            # Pinsel bleibt aktiv. Nach rebuild bleibt der aufgenommene Payload
+            # unabhängig von der aktuellen Auswahl erhalten.
             self.scene.rebuild()
-            self._cancel_format_painter()
-            self.statusBar().showMessage("Format übertragen.", 2000)
+            self.statusBar().showMessage(
+                "Format übertragen – Pinsel bleibt aktiv. Esc beendet.",
+                2200,
+            )
             return True
 
-        # Snapshot wieder aus Undo entfernen, wenn nichts geändert wurde.
+        # Sicherheitsnetz: falls trotz Kompatibilitätsprüfung nichts geändert
+        # werden konnte, den gerade angelegten Undo-Eintrag entfernen.
         if self.scene.undo_stack:
             self.scene.undo_stack.pop()
-        self.statusBar().showMessage(
-            "Dieses Format passt nicht zum gewählten Zielobjekt.",
-            3000,
-        )
         return True
 
     def _context_color_target(self):

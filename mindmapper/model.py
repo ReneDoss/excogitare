@@ -339,6 +339,42 @@ class ProjectModel:
             return 1 if dx >= 0 else 2
         return 3 if dy >= 0 else 4
 
+    def resort_outgoing_relations_from_geometry(self, parent_id: str) -> bool:
+        """Äste eines Elternknotens aus der aktuellen Geometrie neu sortieren.
+
+        Keine Knotenposition wird verändert.
+        Alte manuelle Führungspunkte werden verworfen, da sie zur alten
+        Liniengeometrie gehören.
+        """
+        changed = False
+        states = self.active_map["object_states"]
+        if parent_id not in states:
+            return False
+
+        for relation in self.data["relations"].values():
+            if relation.get("type") != "tree":
+                continue
+            if relation.get("source_id") != parent_id:
+                continue
+
+            child_id = relation.get("target_id")
+            if child_id not in states:
+                continue
+
+            inferred = self.infer_branch_type(parent_id, child_id)
+            if int(relation.get("branch_type", 1)) != int(inferred):
+                relation["branch_type"] = int(inferred)
+                changed = True
+
+            if "route_x" in relation or "route_y" in relation:
+                relation.pop("route_x", None)
+                relation.pop("route_y", None)
+                changed = True
+
+        if changed:
+            self.touch()
+        return changed
+
     def refresh_branch_type_from_position(self, object_id: str) -> bool:
         """Passt die Anschlussseite eines Kindes an seine aktuelle Lage an."""
         parent_id = self.tree_parent(object_id)
@@ -659,6 +695,10 @@ class ProjectModel:
             conflict_id: str | None = None
             for object_id, state in states.items():
                 if object_id in excluded:
+                    continue
+                # Unterstrichene Knoten sind kompakte Listenpunkte und
+                # werden nicht als Kollisionshindernis behandelt.
+                if state.get("shape", "rounded") == "underline":
                     continue
                 if self._rects_overlap(
                     x, y, width, height,
@@ -1086,6 +1126,7 @@ class ProjectModel:
         if obj is None:
             raise KeyError(f"Unbekannter Knoten: {object_id}")
         obj.setdefault("note", "")
+        obj.setdefault("note_html", "")
         obj.setdefault("attachments", [])
         obj.setdefault("tags", [])
         obj.setdefault("status", "")
@@ -1093,14 +1134,36 @@ class ProjectModel:
         return obj
 
     def note(self, object_id: str) -> str:
+        """Plain-text shadow of the note, kept for search/old projects."""
         return str(self.ensure_node_content(object_id).get("note", "") or "")
 
+    def note_html(self, object_id: str) -> str:
+        return str(self.ensure_node_content(object_id).get("note_html", "") or "")
+
     def set_note(self, object_id: str, text: str) -> None:
+        """Compatibility setter for old/plain callers."""
         obj = self.ensure_node_content(object_id)
         value = str(text or "")
-        if str(obj.get("note", "") or "") == value:
+        if str(obj.get("note", "") or "") == value and not obj.get("note_html"):
             return
         obj["note"] = value
+        # Plain edits intentionally clear stale rich markup.
+        obj["note_html"] = ""
+        obj["modified"] = iso_now()
+        self.touch()
+
+    def set_note_rich(self, object_id: str, html: str, plain_text: str) -> None:
+        """Store rich note HTML plus a plain-text shadow for compatibility."""
+        obj = self.ensure_node_content(object_id)
+        html_value = str(html or "")
+        plain_value = str(plain_text or "")
+        if (
+            str(obj.get("note_html", "") or "") == html_value
+            and str(obj.get("note", "") or "") == plain_value
+        ):
+            return
+        obj["note_html"] = html_value
+        obj["note"] = plain_value
         obj["modified"] = iso_now()
         self.touch()
 
@@ -1153,6 +1216,40 @@ class ProjectModel:
         if shape not in {"none", "underline", "rect", "rounded"}:
             raise ValueError(f"Unbekannte Knotenform: {shape}")
         state = self.active_map["object_states"][object_id]
+        old_shape = state.get("shape", "rounded")
+
+        # Beim Wechsel Unterstrichen -> normal bleibt die bisherige
+        # Sammelstamm-Verbindung erhalten. Der Typwechsel ändert damit die
+        # Darstellung, nicht die bereits sinnvolle Anschluss-Topologie.
+        relation_info = self.tree_relation_for_child(object_id)
+        if old_shape == "underline" and shape != "underline" and relation_info is not None:
+            relation_info[1]["keep_group_trunk"] = True
+
+            # Ein Rechteck braucht mehr vertikalen Platz als eine kompakte
+            # Unterstrichen-Zeile. Alles, was in derselben Seitengruppe
+            # geometrisch unterhalb liegt, wächst nur nach unten weiter.
+            parent_id = relation_info[1].get("source_id")
+            branch_type = int(relation_info[1].get("branch_type", 1))
+            current_y = float(state.get("y", 0.0))
+            compact_pitch = 30.0
+            normal_pitch = float(state.get("height", 54.0)) + 34.0
+            extra_space = max(0.0, normal_pitch - compact_pitch)
+
+            if parent_id is not None and extra_space > 0.0:
+                for sibling_id in self.child_ids_by_branch(parent_id, branch_type):
+                    if sibling_id == object_id:
+                        continue
+                    sibling = self.active_map["object_states"].get(sibling_id)
+                    if sibling is None:
+                        continue
+                    if float(sibling.get("y", 0.0)) > current_y + 0.5:
+                        sibling["y"] = float(sibling.get("y", 0.0)) + extra_space
+
+        elif shape == "underline" and relation_info is not None:
+            # Wird der Knoten wieder Unterstrichen, darf er erneut ganz normal
+            # Teil der kompakten Unterstrichen-Gruppe sein.
+            relation_info[1].pop("keep_group_trunk", None)
+
         state["shape"] = shape
         if shape == "underline":
             current = int(state.get("default_branch_type", 1))
