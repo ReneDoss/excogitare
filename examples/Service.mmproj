@@ -5,13 +5,13 @@
   },
   "generator": {
     "name": "Excogitare",
-    "version": "0.1.1Beta"
+    "version": "0.1.19Beta"
   },
   "project": {
     "id": "project-58e4c0f2-709e-4cee-8087-d4b27d4addf9",
     "title": "Serviceeinsatz planen",
     "created": "2026-08-12T18:27:12.448037+00:00",
-    "modified": "2026-08-12T21:37:17+02:00",
+    "modified": "2026-08-15T21:06:42+02:00",
     "active_map_id": "map-00b74daf-c9e4-4c6d-9e23-38ec34ec5cf7"
   },
   "objects": {
@@ -33,7 +33,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-2286c374-2eb5-4285-8440-42ba31d772d0": {
       "id": "object-2286c374-2eb5-4285-8440-42ba31d772d0",
@@ -51,7 +52,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-f2f148db-888a-47ce-b5f8-3fa8f66578db": {
       "id": "object-f2f148db-888a-47ce-b5f8-3fa8f66578db",
@@ -69,7 +71,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-4853950c-5073-457c-9058-387a150fb4da": {
       "id": "object-4853950c-5073-457c-9058-387a150fb4da",
@@ -87,7 +90,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-3d017c9b-51d5-4792-9ebe-a90d9eee265e": {
       "id": "object-3d017c9b-51d5-4792-9ebe-a90d9eee265e",
@@ -105,7 +109,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-3819b65c-c767-42ea-9be6-96b3f0135003": {
       "id": "object-3819b65c-c767-42ea-9be6-96b3f0135003",
@@ -123,7 +128,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-f8d3c322-f3c4-4240-bd1a-c11d51cfb809": {
       "id": "object-f8d3c322-f3c4-4240-bd1a-c11d51cfb809",
@@ -141,7 +147,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-b6c62d3a-27eb-4e4f-8db2-5af44cf95b78": {
       "id": "object-b6c62d3a-27eb-4e4f-8db2-5af44cf95b78",
@@ -159,7 +166,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-c25c8b65-9893-4cca-bffe-d6384637e999": {
       "id": "object-c25c8b65-9893-4cca-bffe-d6384637e999",
@@ -177,7 +185,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-b2ec9c4f-ccb7-4d65-a7e1-a4bef45fb63e": {
       "id": "object-b2ec9c4f-ccb7-4d65-a7e1-a4bef45fb63e",
@@ -195,7 +204,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-51fa2442-4f25-40cd-bc1d-718c2fef8ccf": {
       "id": "object-51fa2442-4f25-40cd-bc1d-718c2fef8ccf",
@@ -213,7 +223,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-2c6179ab-0916-44fb-8bbf-9923a86e42b5": {
       "id": "object-2c6179ab-0916-44fb-8bbf-9923a86e42b5",
@@ -231,7 +242,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-2153f9e5-90fa-4603-bfbd-647a10f30783": {
       "id": "object-2153f9e5-90fa-4603-bfbd-647a10f30783",
@@ -249,7 +261,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-36d52ba2-edd1-4e56-a135-f521480ef92d": {
       "id": "object-36d52ba2-edd1-4e56-a135-f521480ef92d",
@@ -267,7 +280,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-d26b44f3-2576-4e4a-a7b7-ec96ccc2dddc": {
       "id": "object-d26b44f3-2576-4e4a-a7b7-ec96ccc2dddc",
@@ -285,7 +299,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-e5751ff4-8ef1-45a9-8792-45f7d0cca4be": {
       "id": "object-e5751ff4-8ef1-45a9-8792-45f7d0cca4be",
@@ -303,7 +318,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-aa0c275e-19b2-4314-abab-b9e09cf6655f": {
       "id": "object-aa0c275e-19b2-4314-abab-b9e09cf6655f",
@@ -321,7 +337,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-c7ae27fd-9f0e-4923-bd51-0c24fa43e3a4": {
       "id": "object-c7ae27fd-9f0e-4923-bd51-0c24fa43e3a4",
@@ -357,7 +374,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-693e480a-173b-44f3-8713-2595fbdaee1c": {
       "id": "object-693e480a-173b-44f3-8713-2595fbdaee1c",
@@ -375,7 +393,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-840b944b-3144-4089-9f12-76a363ccc1cb": {
       "id": "object-840b944b-3144-4089-9f12-76a363ccc1cb",
@@ -393,7 +412,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-f70f1b1c-16c1-4b5c-b83f-834f9cc2d632": {
       "id": "object-f70f1b1c-16c1-4b5c-b83f-834f9cc2d632",
@@ -411,7 +431,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-f5454625-5a78-40f4-b176-c73f1ed30de3": {
       "id": "object-f5454625-5a78-40f4-b176-c73f1ed30de3",
@@ -429,7 +450,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-be795393-92ad-4930-a72b-1bfd95afe784": {
       "id": "object-be795393-92ad-4930-a72b-1bfd95afe784",
@@ -447,7 +469,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-b0ae36c1-512a-4df5-9e59-4486331952cc": {
       "id": "object-b0ae36c1-512a-4df5-9e59-4486331952cc",
@@ -465,7 +488,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-c68521e2-5254-4cf6-b1e7-e2cb8bc01740": {
       "id": "object-c68521e2-5254-4cf6-b1e7-e2cb8bc01740",
@@ -483,7 +507,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-378f2da9-40df-417a-8d60-75c924d19c9a": {
       "id": "object-378f2da9-40df-417a-8d60-75c924d19c9a",
@@ -501,7 +526,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-2636b2d1-03fa-4637-8980-6020300bafab": {
       "id": "object-2636b2d1-03fa-4637-8980-6020300bafab",
@@ -519,7 +545,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-4184c2cd-ead1-48d8-bcb7-0648580a06a2": {
       "id": "object-4184c2cd-ead1-48d8-bcb7-0648580a06a2",
@@ -537,7 +564,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-a766230d-7cea-46cc-8054-0fef81d0ae8b": {
       "id": "object-a766230d-7cea-46cc-8054-0fef81d0ae8b",
@@ -555,7 +583,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-ab28dda4-7e8a-43a8-a8c9-206d5fad019f": {
       "id": "object-ab28dda4-7e8a-43a8-a8c9-206d5fad019f",
@@ -573,7 +602,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-368dec3d-6a99-491f-b976-5851f3e2513a": {
       "id": "object-368dec3d-6a99-491f-b976-5851f3e2513a",
@@ -591,7 +621,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-2b79fef7-7456-4090-8508-b46f8593e4dd": {
       "id": "object-2b79fef7-7456-4090-8508-b46f8593e4dd",
@@ -609,7 +640,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-04937b2c-f85f-465d-9aac-ff6f2af289e7": {
       "id": "object-04937b2c-f85f-465d-9aac-ff6f2af289e7",
@@ -627,7 +659,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-414d6a18-e943-4895-8030-134c2a55aa6d": {
       "id": "object-414d6a18-e943-4895-8030-134c2a55aa6d",
@@ -645,7 +678,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-e50dac15-6ac6-416d-917b-e836985d8c46": {
       "id": "object-e50dac15-6ac6-416d-917b-e836985d8c46",
@@ -663,7 +697,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-0a97812c-833f-4f75-ae3f-c3b6d953e847": {
       "id": "object-0a97812c-833f-4f75-ae3f-c3b6d953e847",
@@ -681,7 +716,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-21c261c6-8827-4962-8024-03f3a9f4d473": {
       "id": "object-21c261c6-8827-4962-8024-03f3a9f4d473",
@@ -699,7 +735,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-ebb9c89f-028f-4a64-95c1-a6381e17400a": {
       "id": "object-ebb9c89f-028f-4a64-95c1-a6381e17400a",
@@ -717,7 +754,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-e6ca1879-8cc3-4b5c-ae83-d7d6e9280d4d": {
       "id": "object-e6ca1879-8cc3-4b5c-ae83-d7d6e9280d4d",
@@ -735,7 +773,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-cf198e4b-acd7-4262-8997-4908389e75ee": {
       "id": "object-cf198e4b-acd7-4262-8997-4908389e75ee",
@@ -753,7 +792,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-4412fb29-c27e-4a44-af77-f49deceffd9e": {
       "id": "object-4412fb29-c27e-4a44-af77-f49deceffd9e",
@@ -771,7 +811,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     },
     "object-ea6ff263-1a86-43df-ac7d-9e6cbee61c57": {
       "id": "object-ea6ff263-1a86-43df-ac7d-9e6cbee61c57",
@@ -789,7 +830,8 @@
       "tags": [],
       "attachments": [],
       "created": "2026-08-12T18:27:12.448037+00:00",
-      "modified": "2026-08-12T18:27:12.448037+00:00"
+      "modified": "2026-08-12T18:27:12.448037+00:00",
+      "note_html": ""
     }
   },
   "relations": {
@@ -2077,32 +2119,6 @@
           "y": -348.28037499999994,
           "text": "Serviceprocess",
           "html": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta charset=\"utf-8\" /><style type=\"text/css\">\np, li { white-space: pre-wrap; }\nhr { height: 1px; border-width: 0; }\nli.unchecked::marker { content: \"\\2610\"; }\nli.checked::marker { content: \"\\2612\"; }\n</style></head><body style=\" font-family:'Segoe UI'; font-size:9pt; font-weight:400; font-style:normal;\">\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\"><span style=\" font-size:32pt; font-weight:700;\">Serviceprocess</span></p></body></html>",
-          "color": "#3b3b3b",
-          "z": 5.0,
-          "anchor_object_id": null,
-          "offset_x": 0.0,
-          "offset_y": 0.0
-        },
-        "drawing-eb5c1f1b-9d4a-4fb4-a476-0307b3591963": {
-          "id": "drawing-eb5c1f1b-9d4a-4fb4-a476-0307b3591963",
-          "type": "text",
-          "x": 303.71493531249985,
-          "y": -637.6002284374997,
-          "text": "Tesssff",
-          "html": "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0//EN\" \"http://www.w3.org/TR/REC-html40/strict.dtd\">\n<html><head><meta name=\"qrichtext\" content=\"1\" /><meta charset=\"utf-8\" /><style type=\"text/css\">\np, li { white-space: pre-wrap; }\nhr { height: 1px; border-width: 0; }\nli.unchecked::marker { content: \"\\2610\"; }\nli.checked::marker { content: \"\\2612\"; }\n</style></head><body style=\" font-family:'Segoe UI'; font-size:9pt; font-weight:400; font-style:normal;\">\n<p style=\" margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;\">Tesssff</p></body></html>",
-          "color": "#3b3b3b",
-          "z": 5.0,
-          "anchor_object_id": null,
-          "offset_x": 0.0,
-          "offset_y": 0.0
-        },
-        "drawing-aef2c047-94a0-4a70-8309-ab0d44db4e01": {
-          "id": "drawing-aef2c047-94a0-4a70-8309-ab0d44db4e01",
-          "type": "text",
-          "x": -410.3168662499998,
-          "y": -661.7365146874996,
-          "text": "Text",
-          "html": "",
           "color": "#3b3b3b",
           "z": 5.0,
           "anchor_object_id": null,
