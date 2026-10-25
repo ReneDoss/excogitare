@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from .model import ProjectModel, new_id
 from .richtext_support import clipboard_image_html
+from .image_scaling import ImageScalableTextItem
 
 
 SELECTION_COLOR = QColor("#2563eb")
@@ -447,7 +448,7 @@ class DrawingSegmentItem(QGraphicsPathItem):
 DrawingArrowItem = DrawingSegmentItem
 
 
-class DrawingTextItem(QGraphicsTextItem):
+class DrawingTextItem(ImageScalableTextItem):
     """Freies Rich-Text-Objekt mit derselben Formatleiste wie Knotentext."""
 
     def __init__(self, drawing_id: str, data: dict[str, Any], controller: "DrawingController") -> None:
@@ -470,6 +471,13 @@ class DrawingTextItem(QGraphicsTextItem):
         self.setTextInteractionFlags(Qt.NoTextInteraction)
         self._original_html = self.toHtml()
         self._snapshot = None
+
+    def _commit_image_resize(self) -> None:
+        data = self.controller.data(self.drawing_id)
+        data["html"] = self.toHtml()
+        data["text"] = self.toPlainText()
+        self._original_html = self.toHtml()
+        self.controller.model.touch()
 
     def begin_edit(self, select_all: bool = False) -> None:
         scene = self.controller.scene

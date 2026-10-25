@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 import math
 
-from dataclasses import dataclass
-
 from PySide6.QtCore import QFileInfo, QSettings, QSize, QSizeF, QRectF, QMarginsF, QTimer, Qt, QUrl
 import shiboken6
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QDesktopServices, QIcon, QPainter, QPen, QPixmap, QTextCursor, QImage, QPdfWriter, QPageSize, QPageLayout, QTextCharFormat, QTextListFormat
@@ -46,7 +44,8 @@ from . import APP_NAME, APP_VERSION, FORMAT_VERSION
 from .graphics import MapScene
 from .migrations import UnsupportedFormatError
 from .model import ProjectModel
-from .storage import load_project, save_project
+from .storage import load_project
+from .document_safety import DocumentState, DocumentSafety, disk_digest
 from .view import MapView, MiniMapView
 from .drawing import DrawingDock
 from .richtext_support import clipboard_image_html
@@ -197,33 +196,20 @@ class RichNoteEdit(QTextEdit):
         super().insertFromMimeData(source)
 
 
-@dataclass
-class DocumentState:
-    model: ProjectModel
-    path: Path | None = None
-
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, *, recovery_directory=None, recover_on_start=True) -> None:
         super().__init__()
         self.settings = QSettings("Dossmatik", "MindMapper")
         self.model = ProjectModel.create()
         self.current_path: Path | None = None
 
-        self.documents: list[DocumentState] = [
-            DocumentState(
-            model=self.model,
-            path=self.current_path,
-            )
-        ]
+        self.documents: list[DocumentState] = [DocumentState(self.model)]
         self.active_document_index = 0
 
         self.scene = MapScene(self.model)
         self._format_painter_payload = None
         self.scene.format_painter_handler = self._apply_format_painter_to_item
         self.scene.format_painter_cancel_handler = self._cancel_format_painter
- #       self.model = ProjectModel.create()
- #       self.current_path: Path | None = None
- #       self.scene = MapScene(self.model)
         self.view = MapView(self.scene)
         self._closing = False
         self._create_map_tabs()
@@ -243,11 +229,14 @@ class MainWindow(QMainWindow):
         self._format_timer.timeout.connect(self._refresh_details)
         self._format_timer.start(150)
         self._update_status()
+        self.safety = DocumentSafety(self, recovery_directory)
 
         # Beim ersten Start sofort einen Wurzelknoten anbieten.
         # QTimer stellt sicher, dass die Ansicht bereits ihre endgültige
         # Größe besitzt und der Knoten wirklich in der sichtbaren Mitte landet.
-        QTimer.singleShot(0, self._create_initial_root_node)
+        self._schedule_initial_root_node()
+        if recover_on_start:
+            QTimer.singleShot(0, self.safety.offer_recovery)
 
     def _create_map_tabs(self) -> None:
         """Erzeugt die Reiterleiste für mehrere Maps eines Projekts."""
@@ -317,73 +306,44 @@ class MainWindow(QMainWindow):
 
         self.map_tabs.setCurrentIndex(self.active_document_index)
         self.map_tabs.blockSignals(False)
+        if hasattr(self, "safety"):
+            self.safety.refresh_indicators()
 
     def _on_map_tab_changed(self, index: int) -> None:
         if index < 0:
             return
-
         document_index = self.map_tabs.tabData(index)
-
         if document_index is None:
             self._add_new_document()
-            return
+        elif 0 <= int(document_index) < len(self.documents):
+            self.safety.stash_active()
+            self._activate_document(int(document_index))
 
-        document_index = int(document_index)
-
-        if document_index < 0 or document_index >= len(self.documents):
-            return
-
-        self.active_document_index = document_index
-
-        document = self.documents[document_index]
-
+    def _activate_document(self, index: int) -> None:
+        self.active_document_index = index
+        document = self.documents[index]
         self.model = document.model
         self.current_path = document.path
-
         self.scene.model = self.model
-        self.scene.active_node_id = None
-        self.scene.clear_history()
+        self.scene.undo_stack = document.undo_stack
+        self.scene.redo_stack = document.redo_stack
+        self.scene.active_node_id = document.active_node_id
         self.scene.rebuild()
-
-        self._update_properties()
-        self._update_status()
-
-        if self.current_path is None:
-            self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-        else:
-            self.setWindowTitle(
-                f"{APP_NAME} {APP_VERSION} – {self.current_path.name}"
-            )
-
-        if not self.model.active_map.get("object_states"):
-            QTimer.singleShot(0, self._create_initial_root_node)
-
-    def _add_new_document(self) -> None:
-        new_model = ProjectModel.create()
-
-        document = DocumentState(
-            model=new_model,
-            path=None,
-        )
-
-        self.documents.append(document)
-        self.active_document_index = len(self.documents) - 1
-
-        self.model = new_model
-        self.current_path = None
-
-        self.scene.model = self.model
-        self.scene.clear_history()
-        self.scene.active_node_id = None
-        self.scene.rebuild()
-
+        self._details_signature = None
         self._refresh_map_tabs()
         self._update_properties()
         self._update_status()
+        self.safety.refresh_indicators()
+        if document.pristine and not self.model.active_map.get("object_states"):
+            self._schedule_initial_root_node()
 
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+    def _append_document(self, document: DocumentState) -> None:
+        self.safety.stash_active()
+        self.documents.append(document)
+        self._activate_document(len(self.documents) - 1)
 
-        QTimer.singleShot(0, self._create_initial_root_node)
+    def _add_new_document(self) -> None:
+        self._append_document(DocumentState(ProjectModel.create()))
 
 
 
@@ -398,82 +358,29 @@ class MainWindow(QMainWindow):
             if self.map_tabs.tabData(index) == map_id:
                 self.map_tabs.setCurrentIndex(index)
                 break
-        QTimer.singleShot(0, self._create_initial_root_node)
+        self._schedule_initial_root_node()
         self._update_properties()
         self._update_status()
 
     def _close_map_tab(self, index: int) -> None:
         document_index = self.map_tabs.tabData(index)
-
-        # Das Plus-Tab kann nicht geschlossen werden.
-        if document_index is None:
+        if document_index is None or not 0 <= int(document_index) < len(self.documents):
             return
-
         document_index = int(document_index)
-
-        if document_index < 0 or document_index >= len(self.documents):
-            return
-
+        self.safety.stash_active()
         document = self.documents[document_index]
-
-        if document.path is None:
-            document_name = "Unbenannt"
-        else:
-            document_name = document.path.stem
-
-        answer = QMessageBox.question(
-            self,
-            "Map schließen",
-            f'Soll "{document_name}" wirklich geschlossen werden?',
-            QMessageBox.Yes | QMessageBox.Cancel,
-            QMessageBox.Cancel,
-        )
-
-        if answer != QMessageBox.Yes:
+        if not self.safety.can_close(document):
             return
-
-        # Dokument nur aus Excogitare schließen.
-        # Die .mmproj-Datei auf der Festplatte bleibt erhalten.
+        active_document = self.documents[self.active_document_index]
+        self.safety.remove_recovery(document)
         self.documents.pop(document_index)
-
-        # Es soll immer mindestens ein Dokument geöffnet bleiben.
         if not self.documents:
-            new_model = ProjectModel.create()
-            self.documents.append(
-                DocumentState(
-                    model=new_model,
-                    path=None,
-                )
-            )
-
-        self.active_document_index = min(
-            document_index,
-            len(self.documents) - 1,
-        )
-
-        document = self.documents[self.active_document_index]
-
-        self.model = document.model
-        self.current_path = document.path
-
-        self.scene.model = self.model
-        self.scene.active_node_id = None
-        self.scene.clear_history()
-        self.scene.rebuild()
-
-        self._refresh_map_tabs()
-        self._update_properties()
-        self._update_status()
-
-        if self.current_path is None:
-            self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
+            self.documents.append(DocumentState(ProjectModel.create()))
+        if active_document is document:
+            next_index = min(document_index, len(self.documents) - 1)
         else:
-            self.setWindowTitle(
-                f"{APP_NAME} {APP_VERSION} – {self.current_path.name}"
-            )
-
-        if not self.model.active_map.get("object_states"):
-            QTimer.singleShot(0, self._create_initial_root_node)
+            next_index = next(i for i, doc in enumerate(self.documents) if doc is active_document)
+        self._activate_document(next_index)
 
     def _keep_plus_tab_last(self, _from: int, _to: int) -> None:
         plus_index = next((i for i in range(self.map_tabs.count())
@@ -2427,9 +2334,17 @@ class MainWindow(QMainWindow):
         if self.scene.redo():
             self._update_status()
 
-    def _create_initial_root_node(self) -> None:
+    def _schedule_initial_root_node(self) -> None:
+        document = self.documents[self.active_document_index]
+        map_id = self.model.active_map_id
+        QTimer.singleShot(0, lambda: self._create_initial_root_node(document, map_id))
+
+    def _create_initial_root_node(self, expected_document=None, expected_map_id=None) -> None:
         """Erzeugt in einem leeren Projekt sofort den ersten editierbaren Knoten."""
-        if self.model.active_map.get("object_states"):
+        document = self.documents[self.active_document_index]
+        if (self._closing or (expected_document is not None and document is not expected_document)
+                or (expected_map_id is not None and self.model.active_map_id != expected_map_id)
+                or self.model.active_map.get("object_states")):
             return
 
         center = self.view.mapToScene(self.view.viewport().rect().center())
@@ -2438,6 +2353,10 @@ class MainWindow(QMainWindow):
         # Der automatisch erzeugte Startknoten gehört zum leeren Dokument
         # und soll nicht als erste Benutzeraktion in der Undo-Historie stehen.
         self.scene.clear_history()
+        document = self.documents[self.active_document_index]
+        if document.pristine:
+            document.pristine = False
+            document.mark_saved()
         self._update_status()
 
     def create_node(self) -> None:
@@ -2468,113 +2387,57 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def new_project(self) -> None:
-        self.model = ProjectModel.create()
-        self.current_path = None
-        self.scene.model = self.model
-        self.scene.clear_history()
-        self.scene.active_node_id = None
-        self.scene.rebuild()
-        self._refresh_map_tabs()
-        self._update_properties()
-        self._update_status()
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION}")
-
-        # Auch "Neu" startet unmittelbar mit einem beschreibbaren Wurzelknoten.
-        QTimer.singleShot(0, self._create_initial_root_node)
+        """Create a separate document; never detach the visible model from its tab."""
+        self._add_new_document()
 
     def open_project(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Projekt öffnen",
-            "",
-            "MindMapper-Projekt (*.mmproj *.json);;Alle Dateien (*)",
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Projekt öffnen", "",
+                    "MindMapper-Projekt (*.mmproj *.json);;Alle Dateien (*)")
         if not path:
             return
-
+        new_path = Path(path)
+        for index, document in enumerate(self.documents):
+            if document.path is not None and document.path.resolve() == new_path.resolve():
+                self.safety.stash_active()
+                self._activate_document(index)
+                return
         try:
-            data = load_project(path)
+            data = load_project(new_path)
+            digest = disk_digest(new_path)
+            # Build a separate scene before replacing the user's current view.
+            probe = MapScene(ProjectModel(data))
+            probe.clear()
         except UnsupportedFormatError as exc:
             QMessageBox.critical(self, "Nicht unterstütztes Dateiformat", str(exc))
             return
         except Exception as exc:
             QMessageBox.critical(self, "Fehler beim Öffnen", str(exc))
             return
+        document = DocumentState(ProjectModel(data), path=new_path, pristine=False,
+                                 disk_digest=digest)
+        self._append_document(document)
+        document.mark_saved()
+        self.safety.refresh_indicators()
 
-     #   self.model = ProjectModel(data)
-     #   self.current_path = Path(path)
-     #   self.scene.model = self.model
-    #  self.scene.clear_history()
-    #    self.scene.active_node_id = None
-    #    self.scene.rebuild()
-    #    self._refresh_map_tabs()
-    #    self._update_properties()
-    #    self._update_status()
-    #    self.setWindowTitle(f"{APP_NAME} {APP_VERSION} – {self.current_path.name}")
-        new_model = ProjectModel(data)
-        new_path = Path(path)
+    def save_project(self) -> bool:
+        return self.safety.save(self.documents[self.active_document_index])
 
-        document = DocumentState(
-            model=new_model,
-            path=new_path,
-        )
-
-        self.documents.append(document)
-        self.active_document_index = len(self.documents) - 1
-
-        self.model = new_model
-        self.current_path = new_path
-
-        self.scene.model = self.model
-        self.scene.clear_history()
-        self.scene.active_node_id = None
-        self.scene.rebuild()
-
-        self._refresh_map_tabs()
-        self._update_properties()
-        self._update_status()
-
-        self.setWindowTitle(
-            f"{APP_NAME} {APP_VERSION} – {self.current_path.name}"
-        )
-
-    def save_project(self) -> None:
-        if self.current_path is None:
-            self.save_project_as()
-            return
-
-        try:
-            save_project(self.current_path, self.model.data)
-        except Exception as exc:
-            QMessageBox.critical(self, "Fehler beim Speichern", str(exc))
-            return
-
-        self._update_status()
-        self.statusBar().showMessage(f"Gespeichert: {self.current_path}", 4000)
-
-    def save_project_as(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Projekt speichern",
-            "projekt.mmproj",
-            "MindMapper-Projekt (*.mmproj)",
-        )
-        if not path:
-            return
-
-        if not path.lower().endswith(".mmproj"):
-            path += ".mmproj"
-
-        self.current_path = Path(path)
-        self.documents[self.active_document_index].path = self.current_path
-
-        self.save_project()
-        self._refresh_map_tabs()
-        self.setWindowTitle(f"{APP_NAME} {APP_VERSION} – {self.current_path.name}")
+    def save_project_as(self) -> bool:
+        return self.safety.save(self.documents[self.active_document_index], save_as=True)
 
     def closeEvent(self, event) -> None:
+        self.safety.stash_active()
+        for document in self.documents:
+            if not self.safety.can_close(document):
+                event.ignore()
+                self.safety.refresh_indicators()
+                return
         self._closing = True
-
+        self.safety.indicator_timer.stop()
+        self.safety.recovery_timer.stop()
+        self._format_timer.stop()
+        for document in self.documents:
+            self.safety.remove_recovery(document)
         self.settings.setValue("main_window/geometry", self.saveGeometry())
         self.settings.setValue("main_window/state_v1_3", self.saveState())
         self.settings.sync()
